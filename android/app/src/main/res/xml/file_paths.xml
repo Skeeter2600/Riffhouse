@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Expose app cache directory (getTemporaryDirectory) -->
+    <cache-path name="cache" path="." />
+    <!-- Expose app files directory (getApplicationDocumentsDirectory) -->
+    <files-path name="files" path="." />
+</paths>

@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+  <!-- Deep pink background -->
+  <path android:fillColor="#EC4899"
+      android:pathData="M0,0 L200,0 L200,200 L0,200 Z"/>
+  <!-- Rose wave overlay -->
+  <path android:fillColor="#BE185D"
+      android:pathData="M0,50 Q100,10 200,70 L200,200 L0,200 Z"/>
+  <!-- Circular arrow / replay icon: outer ring arc path -->
+  <path android:fillColor="#FFFFFF"
+      android:pathData="M100,60
+        C125,60 145,78 148,101
+        C151,124 135,145 113,150
+        C91,155 70,141 63,120
+        C56,99 68,76 88,68
+        L88,80
+        C73,87 64,103 68,119
+        C72,135 87,146 103,144
+        C119,142 131,128 130,112
+        C129,96 116,84 100,84
+        Z"/>
+  <!-- Arrow head pointing left/down to complete the loop -->
+  <path android:fillColor="#FFFFFF"
+      android:pathData="M58,105 L72,88 L80,110 Z"/>
+</vector>

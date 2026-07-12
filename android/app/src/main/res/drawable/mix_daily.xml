@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+  <!-- Purple background -->
+  <path android:fillColor="#7C3AED"
+      android:pathData="M0,0 L200,0 L200,200 L0,200 Z"/>
+  <!-- Indigo wave overlay -->
+  <path android:fillColor="#4F46E5"
+      android:pathData="M0,80 Q50,40 100,60 Q150,80 200,50 L200,200 L0,200 Z"/>
+  <!-- Star icon (5-pointed) -->
+  <path android:fillColor="#FFFFFF"
+      android:pathData="M100,52 L108.5,78.5 L136.5,78.5 L114,95 L122.5,121.5 L100,105 L77.5,121.5 L86,95 L63.5,78.5 L91.5,78.5 Z"/>
+</vector>

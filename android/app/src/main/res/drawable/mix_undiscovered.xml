@@ -1,0 +1,24 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+  <!-- Teal background -->
+  <path android:fillColor="#0891B2"
+      android:pathData="M0,0 L200,0 L200,200 L0,200 Z"/>
+  <!-- Cyan diagonal overlay -->
+  <path android:fillColor="#0E7490"
+      android:pathData="M200,0 Q130,80 200,200 L0,200 L0,0 Z"/>
+  <!-- Compass rose: N needle (white, pointing up) -->
+  <path android:fillColor="#FFFFFF"
+      android:pathData="M100,58 L109,100 L100,92 L91,100 Z"/>
+  <!-- S needle (light, pointing down) -->
+  <path android:fillColor="#A5F3FC"
+      android:pathData="M100,142 L91,100 L100,108 L109,100 Z"/>
+  <!-- E needle (white, pointing right) -->
+  <path android:fillColor="#FFFFFF"
+      android:pathData="M142,100 L100,91 L108,100 L100,109 Z"/>
+  <!-- W needle (light, pointing left) -->
+  <path android:fillColor="#A5F3FC"
+      android:pathData="M58,100 L100,109 L92,100 L100,91 Z"/>
+</vector>
