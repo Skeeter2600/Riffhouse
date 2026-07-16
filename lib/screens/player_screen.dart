@@ -46,8 +46,12 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
   }
 
   String? _artUrl(JellyfinTrack? track) {
+    if (track == null) return null;
+    if (track.id.startsWith('podcast_')) {
+      return track.imageTag;
+    }
     final service = ref.read(jellyfinServiceProvider);
-    if (service == null || track == null) return null;
+    if (service == null) return null;
     if (track.imageTag != null) {
       return service.getImageUrl(track.id, track.imageTag!);
     }
@@ -366,7 +370,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                       ),
                       // Previous
                       _ControlIconButton(
-                        icon: Icons.skip_previous_rounded,
+                        icon: (queueState.currentTrack?.id.startsWith('podcast_') ?? false)
+                            ? Icons.fast_rewind_rounded
+                            : Icons.skip_previous_rounded,
                         size: 36,
                         onPressed: queueNotifier.skipToPrevious,
                       ),
@@ -380,7 +386,9 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                       ),
                       // Next
                       _ControlIconButton(
-                        icon: Icons.skip_next_rounded,
+                        icon: (queueState.currentTrack?.id.startsWith('podcast_') ?? false)
+                            ? Icons.fast_forward_rounded
+                            : Icons.skip_next_rounded,
                         size: 36,
                         onPressed: queueNotifier.skipToNext,
                       ),

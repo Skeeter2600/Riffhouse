@@ -9,6 +9,7 @@ import '../services/cache_service.dart';
 import '../services/jellyfin_service.dart';
 import 'auth_provider.dart';
 import 'database_provider.dart';
+import 'podcast_provider.dart';
 import '../audio/queue_notifier.dart';
 
 // ---------------------------------------------------------------------------
@@ -338,19 +339,60 @@ final cachedTracksProvider =
     AsyncNotifierProvider<CachedTracksNotifier, List<CachedTrack>>(
         CachedTracksNotifier.new);
 
-/// Provider that resolves the tracks for a given smart mix type ('daily', 'heavy', 'undiscovered').
+// ---------------------------------------------------------------------------
+// Smart mix caching (regenerates daily at 6 AM local time)
+// ---------------------------------------------------------------------------
+
+class _CachedMix {
+  final List<JellyfinTrack> tracks;
+  final DateTime generatedAt;
+  _CachedMix(this.tracks, this.generatedAt);
+}
+
+DateTime _next6am(DateTime from) {
+  final today6am = DateTime(from.year, from.month, from.day, 6);
+  return from.isBefore(today6am) ? today6am : today6am.add(const Duration(days: 1));
+}
+
+bool _isMixCacheValid(String key) {
+  final cached = _mixCache[key];
+  if (cached == null) return false;
+  return DateTime.now().isBefore(_next6am(cached.generatedAt));
+}
+
+final Map<String, _CachedMix> _mixCache = {};
+
+/// Provider that resolves the tracks for a given smart mix type
+/// ('daily', 'heavy', 'undiscovered', 'daily_drive').
+/// Results are cached per mix type and regenerate at 6 AM local time.
 final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>((ref, mixType) async {
+  // Return cached result if still valid (before next 6 AM boundary).
+  if (_isMixCacheValid(mixType)) {
+    return _mixCache[mixType]!.tracks;
+  }
+
   final tracks = await ref.watch(tracksProvider.future);
   final playlistService = ref.read(playlistServiceProvider);
-  
+
+  List<JellyfinTrack> result;
   if (mixType == 'daily') {
-    return playlistService.getSmartMix(libraryTracks: tracks);
+    result = await playlistService.getSmartMix(libraryTracks: tracks);
   } else if (mixType == 'heavy') {
-    return playlistService.getHeavyRotation(libraryTracks: tracks);
+    result = await playlistService.getHeavyRotation(libraryTracks: tracks);
   } else if (mixType == 'undiscovered') {
-    return playlistService.getUndiscovered(libraryTracks: tracks);
+    result = await playlistService.getUndiscovered(libraryTracks: tracks);
+  } else if (mixType == 'daily_drive') {
+    final podcastService = ref.read(podcastServiceProvider);
+    result = await playlistService.getDailyDrive(
+      libraryTracks: tracks,
+      podcastService: podcastService,
+    );
+  } else {
+    result = [];
   }
-  return [];
+
+  _mixCache[mixType] = _CachedMix(result, DateTime.now());
+  return result;
 });
 
 // ---------------------------------------------------------------------------

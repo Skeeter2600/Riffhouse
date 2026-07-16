@@ -43,6 +43,7 @@ class JellyfinTrack {
   final String serverId;
   final String? imageTag;
   final DateTime? dateCreated;
+  final String? remoteStreamUrl;
 
   String get jellyfinId => id;
   String get title => name;
@@ -50,7 +51,7 @@ class JellyfinTrack {
   String get artist => artists.isNotEmpty ? artists.join(', ') : albumArtist;
   Duration get duration => Duration(milliseconds: durationMs);
   String? get artUri => null;
-  String? get streamUrl => null;
+  String? get streamUrl => remoteStreamUrl;
 
   const JellyfinTrack({
     required this.id,
@@ -64,6 +65,7 @@ class JellyfinTrack {
     required this.serverId,
     this.imageTag,
     this.dateCreated,
+    this.remoteStreamUrl,
   });
 
   factory JellyfinTrack.fromJson(Map<String, dynamic> json) {

@@ -5,13 +5,14 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../screens/album_detail_screen.dart';
 import '../screens/artist_detail_screen.dart';
-import '../screens/downloads_screen.dart';
 import '../screens/library_screen.dart';
 import '../screens/login_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/playlist_detail_screen.dart';
 import '../screens/playlist_add_tracks_screen.dart';
 import '../screens/playlists_screen.dart';
+import '../screens/podcasts_screen.dart';
+import '../screens/podcast_detail_screen.dart';
 import '../screens/search_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/smart_mix_detail_screen.dart';
@@ -87,9 +88,9 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
                 label: 'Playlists',
               ),
               NavigationDestination(
-                icon: Icon(Icons.download_outlined),
-                selectedIcon: Icon(Icons.download),
-                label: 'Downloads',
+                icon: Icon(Icons.podcasts_outlined),
+                selectedIcon: Icon(Icons.podcasts),
+                label: 'Podcasts',
               ),
             ],
           ),
@@ -156,8 +157,8 @@ final routerProvider = Provider<GoRouter>((ref) {
           StatefulShellBranch(
             routes: [
               GoRoute(
-                path: '/home/downloads',
-                builder: (context, state) => const DownloadsScreen(),
+                path: '/home/podcasts',
+                builder: (context, state) => const PodcastsScreen(),
               ),
             ],
           ),
@@ -171,6 +172,12 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/album/:albumId',
         builder: (context, state) => AlbumDetailScreen(
           albumId: state.pathParameters['albumId']!,
+        ),
+      ),
+      GoRoute(
+        path: '/podcast/:feedId',
+        builder: (context, state) => PodcastDetailScreen(
+          feedId: state.pathParameters['feedId']!,
         ),
       ),
       GoRoute(

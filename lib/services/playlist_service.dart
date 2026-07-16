@@ -3,7 +3,10 @@ import 'dart:math';
 import 'package:drift/drift.dart';
 import '../database/app_database.dart';
 import '../models/jellyfin_models.dart';
+import '../models/podcast_episode.dart';
+import '../models/podcast_feed.dart';
 import 'jellyfin_service.dart';
+import 'podcast_service.dart';
 
 /// Manages playlist synchronisation and smart mix generation using Drift.
 class PlaylistService {
@@ -199,6 +202,176 @@ class PlaylistService {
     }
 
     result.shuffle(rng);
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Daily Drive (podcast + music interleave)
+  // ---------------------------------------------------------------------------
+
+  /// Builds a Daily Drive queue interleaving podcast episodes and music:
+  ///
+  /// 1. Most recent episode of Up First
+  /// 2. 5 frequently played songs (highest playCount)
+  /// 3. Most recent episode of Marketplace
+  /// 4. 5 recently listened songs (most recent lastPlayedAt)
+  /// 5. 1 unlistened podcast episode from any other subscribed feed
+  /// 6. 20 undiscovered (unplayed) songs, shuffled randomly
+  Future<List<JellyfinTrack>> getDailyDrive({
+    required List<JellyfinTrack> libraryTracks,
+    required PodcastService podcastService,
+  }) async {
+    final result = <JellyfinTrack>[];
+
+    // Load playback records for music selection.
+    final allRecords = await db.getAllPlaybackRecords();
+    final recordMap = <String, PlaybackRecord>{
+      for (final r in allRecords) r.jellyfinId: r,
+    };
+
+    // Load subscribed feeds once.
+    List<PodcastFeed> feeds = [];
+    try {
+      feeds = await podcastService.getSubscribedFeeds();
+    } catch (e) {
+      print('[PlaylistService] getDailyDrive: Failed to load feeds: $e');
+    }
+
+    // ── 1. Most recent episode of Up First ──────────────────────────────
+    try {
+      final upFirstFeed = feeds.cast<PodcastFeed?>().firstWhere(
+        (f) => f!.id == 'up_first',
+        orElse: () => null,
+      );
+      if (upFirstFeed != null) {
+        final episodes = await podcastService.fetchEpisodes(upFirstFeed);
+        if (episodes.isNotEmpty) {
+          episodes.sort((a, b) => b.pubDate.compareTo(a.pubDate));
+          result.add(episodes.first.toJellyfinTrack());
+        }
+      }
+    } catch (e) {
+      print('[PlaylistService] getDailyDrive: Up First failed: $e');
+    }
+
+    // ── 2. 5 frequently played songs (highest playCount) ────────────────
+    final playedTracks = libraryTracks.where((t) {
+      final rec = recordMap[t.id];
+      return rec != null && rec.playCount > 0;
+    }).toList();
+    playedTracks.sort((a, b) {
+      final countA = recordMap[a.id]?.playCount ?? 0;
+      final countB = recordMap[b.id]?.playCount ?? 0;
+      return countB.compareTo(countA);
+    });
+    result.addAll(playedTracks.take(5));
+
+    // ── 3. Most recent episode of Marketplace ───────────────────────────
+    try {
+      final marketplaceFeed = feeds.cast<PodcastFeed?>().firstWhere(
+        (f) => f!.id == 'marketplace',
+        orElse: () => null,
+      );
+      if (marketplaceFeed != null) {
+        final episodes = await podcastService.fetchEpisodes(marketplaceFeed);
+        if (episodes.isNotEmpty) {
+          episodes.sort((a, b) => b.pubDate.compareTo(a.pubDate));
+          result.add(episodes.first.toJellyfinTrack());
+        }
+      }
+    } catch (e) {
+      print('[PlaylistService] getDailyDrive: Marketplace failed: $e');
+    }
+
+    // ── 4. 5 recently listened songs (most recent lastPlayedAt) ─────────
+    final recentlyPlayed = libraryTracks.where((t) {
+      final rec = recordMap[t.id];
+      return rec != null && rec.lastPlayedAt != null;
+    }).toList();
+    recentlyPlayed.sort((a, b) {
+      final dateA = recordMap[a.id]!.lastPlayedAt!;
+      final dateB = recordMap[b.id]!.lastPlayedAt!;
+      return dateB.compareTo(dateA);
+    });
+    // Avoid duplicates with the frequently-played segment.
+    final usedIds = result.map((t) => t.id).toSet();
+    final recentUnique = recentlyPlayed.where((t) => !usedIds.contains(t.id));
+    result.addAll(recentUnique.take(5));
+
+    // Get unplayed discovery tracks beforehand
+    final rng = Random();
+    final unplayed = libraryTracks.where((t) {
+      final rec = recordMap[t.id];
+      return rec == null || rec.playCount == 0;
+    }).toList();
+    unplayed.shuffle(rng);
+
+    var discoveryIndex = 0;
+
+    // ── 5. 2 unheard non-news podcast episodes of different genres with 5 songs in between ──────
+    try {
+      final nonNewsFeeds = feeds.where(
+        (f) => f.id != 'up_first' && f.id != 'marketplace' && f.category.toLowerCase() != 'news',
+      ).toList();
+      if (nonNewsFeeds.isNotEmpty) {
+        final listenedGuids = await podcastService.getListenedEpisodes();
+        
+        final feedEpisodesMap = <PodcastFeed, List<PodcastEpisode>>{};
+        await Future.wait(
+          nonNewsFeeds.map((feed) async {
+            try {
+              final eps = await podcastService.fetchEpisodes(feed);
+              final unheardEps = eps.where((ep) => !listenedGuids.contains(ep.guid)).toList();
+              if (unheardEps.isNotEmpty) {
+                unheardEps.sort((a, b) => b.pubDate.compareTo(a.pubDate));
+                feedEpisodesMap[feed] = unheardEps;
+              }
+            } catch (_) {}
+          }),
+        );
+        
+        if (feedEpisodesMap.isNotEmpty) {
+          final sortedFeeds = feedEpisodesMap.keys.toList()
+            ..sort((a, b) {
+              final dateA = feedEpisodesMap[a]!.first.pubDate;
+              final dateB = feedEpisodesMap[b]!.first.pubDate;
+              return dateB.compareTo(dateA);
+            });
+          
+          final firstFeed = sortedFeeds.first;
+          final firstEp = feedEpisodesMap[firstFeed]!.first;
+          result.add(firstEp.toJellyfinTrack());
+          
+          // ── 6. 5 songs between the 2 podcasts ──────
+          final first5Songs = unplayed.skip(discoveryIndex).take(5).toList();
+          result.addAll(first5Songs);
+          discoveryIndex += first5Songs.length;
+          
+          // ── 7. Second unheard non-news podcast episode of different genre ──
+          final firstGenre = firstFeed.category;
+          final differentGenreFeed = sortedFeeds.cast<PodcastFeed?>().firstWhere(
+            (f) => f!.category != firstGenre,
+            orElse: () => null,
+          );
+          
+          if (differentGenreFeed != null) {
+            final secondEp = feedEpisodesMap[differentGenreFeed]!.first;
+            result.add(secondEp.toJellyfinTrack());
+          } else if (sortedFeeds.length > 1) {
+            final secondFeed = sortedFeeds.firstWhere((f) => f != firstFeed);
+            final secondEp = feedEpisodesMap[secondFeed]!.first;
+            result.add(secondEp.toJellyfinTrack());
+          }
+        }
+      }
+    } catch (e) {
+      print('[PlaylistService] getDailyDrive: Non-news podcasts failed: $e');
+    }
+
+    // ── 8. 20 undiscovered (unplayed) songs, shuffled randomly ──────────
+    final remaining20Songs = unplayed.skip(discoveryIndex).take(20).toList();
+    result.addAll(remaining20Songs);
+
     return result;
   }
 

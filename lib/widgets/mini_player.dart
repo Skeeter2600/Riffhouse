@@ -102,9 +102,11 @@ class MiniPlayer extends ConsumerWidget {
                     },
                   ),
                   // Skip next
-                  IconButton(
-                    icon: const Icon(
-                      Icons.skip_next_rounded,
+                   IconButton(
+                    icon: Icon(
+                      (queueState.currentTrack?.id.startsWith('podcast_') ?? false)
+                          ? Icons.fast_forward_rounded
+                          : Icons.skip_next_rounded,
                       color: AppColors.textSecondary,
                       size: 24,
                     ),

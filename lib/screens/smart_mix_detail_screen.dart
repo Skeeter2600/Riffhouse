@@ -18,6 +18,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
     if (mixType == 'daily') return 'Daily Mix';
     if (mixType == 'heavy') return 'Heavy Rotation';
     if (mixType == 'undiscovered') return 'Undiscovered';
+    if (mixType == 'daily_drive') return 'Daily Drive';
     return 'Smart Mix';
   }
 
@@ -25,6 +26,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
     if (mixType == 'daily') return 'Curated weekly playlist based on your activity';
     if (mixType == 'heavy') return 'Your most played tracks on repeat';
     if (mixType == 'undiscovered') return 'Tracks from your library you haven\'t heard yet';
+    if (mixType == 'daily_drive') return 'Your personalized news and music mix';
     return 'Your personalized smart mix';
   }
 
@@ -32,6 +34,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
     if (mixType == 'daily') return [const Color(0xFF7C3AED), const Color(0xFF4F46E5)];
     if (mixType == 'heavy') return [const Color(0xFFEC4899), const Color(0xFFBE185D)];
     if (mixType == 'undiscovered') return [const Color(0xFF06B6D4), const Color(0xFF0369A1)];
+    if (mixType == 'daily_drive') return [const Color(0xFFF59E0B), const Color(0xFFD97706)];
     return [AppColors.primary, AppColors.primaryDark];
   }
 
@@ -39,6 +42,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
     if (mixType == 'daily') return Icons.auto_awesome;
     if (mixType == 'heavy') return Icons.replay_rounded;
     if (mixType == 'undiscovered') return Icons.explore_rounded;
+    if (mixType == 'daily_drive') return Icons.directions_car_rounded;
     return Icons.music_note_rounded;
   }
 
