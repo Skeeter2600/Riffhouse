@@ -44,16 +44,44 @@ class ServerConfigs extends Table {
   TextColumn get accessToken => text()();
 }
 
+/// Metadata cache for all library tracks fetched from Jellyfin
+class LocalTracks extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get jellyfinId => text().unique()();
+  TextColumn get name => text()();
+  TextColumn get artistsJson => text()(); // JSON-encoded List<String>
+  TextColumn get albumArtist => text()();
+  TextColumn get albumId => text()();
+  TextColumn get albumName => text()();
+  TextColumn get genresJson => text()(); // JSON-encoded List<String>
+  IntColumn get durationMs => integer()();
+  TextColumn get serverId => text()();
+  TextColumn get imageTag => text().nullable()();
+  DateTimeColumn get dateCreated => dateTime().nullable()();
+}
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 
-@DriftDatabase(tables: [CachedTracks, PlaybackRecords, LocalPlaylists, ServerConfigs])
+@DriftDatabase(tables: [CachedTracks, PlaybackRecords, LocalPlaylists, ServerConfigs, LocalTracks])
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_openConnection());
 
   AppDatabase.forTesting(QueryExecutor executor) : super(executor);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) async {
+          await m.createAll();
+        },
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            await m.createTable(localTracks);
+          }
+        },
+      );
 
   // ── CachedTracks ────────────────────────────────────────────────────────────
 
@@ -158,6 +186,29 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> clearServerConfig() => delete(serverConfigs).go();
+
+  // ── LocalTracks ─────────────────────────────────────────────────────────────
+
+  Future<LocalTrack?> getLocalTrack(String jellyfinId) =>
+      (select(localTracks)..where((t) => t.jellyfinId.equals(jellyfinId)))
+          .getSingleOrNull();
+
+  Future<List<LocalTrack>> getAllLocalTracks() => select(localTracks).get();
+
+  Future<void> upsertLocalTrack(LocalTracksCompanion entry) =>
+      into(localTracks).insertOnConflictUpdate(entry);
+
+  Future<void> bulkInsertLocalTracks(List<LocalTracksCompanion> entries) async {
+    await batch((batch) {
+      batch.insertAllOnConflictUpdate(localTracks, entries);
+    });
+  }
+
+  Future<int> deleteLocalTrack(String jellyfinId) =>
+      (delete(localTracks)..where((t) => t.jellyfinId.equals(jellyfinId)))
+          .go();
+
+  Future<void> clearLocalTracks() => delete(localTracks).go();
 }
 
 // ─── Connection helper ────────────────────────────────────────────────────────

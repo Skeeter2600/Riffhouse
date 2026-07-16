@@ -116,14 +116,18 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                             color: AppColors.textPrimary, size: 32),
                         onPressed: () => Navigator.of(context).pop(),
                       ),
-                      const Expanded(
+                      Expanded(
                         child: Center(
                           child: Text(
-                            'Now Playing',
-                            style: TextStyle(
+                            queueState.sourceTitle != null
+                                ? 'Playing from ${queueState.sourceTitle}'
+                                : 'Now Playing',
+                            style: const TextStyle(
                                 color: AppColors.textSecondary,
                                 fontSize: 13,
                                 fontWeight: FontWeight.w500),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),

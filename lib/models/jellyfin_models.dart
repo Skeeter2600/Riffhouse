@@ -42,6 +42,7 @@ class JellyfinTrack {
   final int durationMs;
   final String serverId;
   final String? imageTag;
+  final DateTime? dateCreated;
 
   String get jellyfinId => id;
   String get title => name;
@@ -62,6 +63,7 @@ class JellyfinTrack {
     required this.durationMs,
     required this.serverId,
     this.imageTag,
+    this.dateCreated,
   });
 
   factory JellyfinTrack.fromJson(Map<String, dynamic> json) {
@@ -86,6 +88,9 @@ class JellyfinTrack {
     final imageTags = json['ImageTags'] as Map<String, dynamic>?;
     final imageTag = imageTags?['Primary'] as String?;
 
+    final dateCreatedStr = json['DateCreated'] as String?;
+    final dateCreated = dateCreatedStr != null ? DateTime.tryParse(dateCreatedStr) : null;
+
     return JellyfinTrack(
       id: (json['Id'] as String?) ?? '',
       name: (json['Name'] as String?) ?? '',
@@ -97,6 +102,7 @@ class JellyfinTrack {
       durationMs: durationMs,
       serverId: (json['ServerId'] as String?) ?? '',
       imageTag: imageTag,
+      dateCreated: dateCreated,
     );
   }
 

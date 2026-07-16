@@ -21,6 +21,9 @@ class QueueState {
   final String? currentArtUrl;
   final AudioServiceShuffleMode shuffleMode;
   final AudioServiceRepeatMode repeatMode;
+  final String? sourceType;
+  final String? sourceId;
+  final String? sourceTitle;
 
   const QueueState({
     this.tracks = const [],
@@ -32,6 +35,9 @@ class QueueState {
     this.currentArtUrl,
     this.shuffleMode = AudioServiceShuffleMode.none,
     this.repeatMode = AudioServiceRepeatMode.none,
+    this.sourceType,
+    this.sourceId,
+    this.sourceTitle,
   });
 
   /// Returns the currently active [JellyfinTrack], or `null` when the queue is
@@ -51,6 +57,9 @@ class QueueState {
     String? currentArtUrl,
     AudioServiceShuffleMode? shuffleMode,
     AudioServiceRepeatMode? repeatMode,
+    String? sourceType,
+    String? sourceId,
+    String? sourceTitle,
     bool clearDuration = false,
   }) {
     return QueueState(
@@ -63,6 +72,9 @@ class QueueState {
       currentArtUrl: currentArtUrl ?? this.currentArtUrl,
       shuffleMode: shuffleMode ?? this.shuffleMode,
       repeatMode: repeatMode ?? this.repeatMode,
+      sourceType: sourceType ?? this.sourceType,
+      sourceId: sourceId ?? this.sourceId,
+      sourceTitle: sourceTitle ?? this.sourceTitle,
     );
   }
 
@@ -79,7 +91,10 @@ class QueueState {
           duration == other.duration &&
           currentArtUrl == other.currentArtUrl &&
           shuffleMode == other.shuffleMode &&
-          repeatMode == other.repeatMode;
+          repeatMode == other.repeatMode &&
+          sourceType == other.sourceType &&
+          sourceId == other.sourceId &&
+          sourceTitle == other.sourceTitle;
 
   @override
   int get hashCode => Object.hash(
@@ -92,6 +107,9 @@ class QueueState {
         currentArtUrl,
         shuffleMode,
         repeatMode,
+        sourceType,
+        sourceId,
+        sourceTitle,
       );
 }
 
@@ -106,7 +124,18 @@ class QueueNotifier extends StateNotifier<QueueState> {
 
   final List<StreamSubscription<dynamic>> _subscriptions = [];
 
-  QueueNotifier(this._handler) : super(const QueueState()) {
+  QueueNotifier(this._handler)
+      : super(QueueState(
+          tracks: _handler.currentQueue,
+          currentIndex: _handler.playbackState.value.queueIndex ?? 0,
+          isPlaying: _handler.playbackState.value.playing,
+          position: _handler.playbackState.value.position,
+          shuffleMode: _handler.playbackState.value.shuffleMode,
+          repeatMode: _handler.playbackState.value.repeatMode,
+          sourceType: _handler.currentSourceType,
+          sourceId: _handler.currentSourceId,
+          sourceTitle: _handler.currentSourceTitle,
+        )) {
     _bindToHandler();
   }
 
@@ -123,8 +152,9 @@ class QueueNotifier extends StateNotifier<QueueState> {
         // If that list hasn't been populated yet we keep whatever we have.
         if (mediaItems.isEmpty) {
           state = state.copyWith(tracks: [], currentIndex: 0);
+        } else {
+          state = state.copyWith(tracks: _handler.currentQueue);
         }
-        // Actual JellyfinTrack list is synced via playbackState/queueIndex below.
       }),
     );
 
@@ -159,6 +189,9 @@ class QueueNotifier extends StateNotifier<QueueState> {
           state = state.copyWith(
             duration: item.duration,
             currentArtUrl: item.artUri?.toString(),
+            sourceType: _handler.currentSourceType,
+            sourceId: _handler.currentSourceId,
+            sourceTitle: _handler.currentSourceTitle,
           );
         } else {
           state = state.copyWith(clearDuration: true);
@@ -172,13 +205,28 @@ class QueueNotifier extends StateNotifier<QueueState> {
   // ---------------------------------------------------------------------------
 
   /// Replaces the queue with [tracks] and begins playback at [startIndex].
-  Future<void> playQueue(List<JellyfinTrack> tracks, int startIndex) async {
+  Future<void> playQueue(
+    List<JellyfinTrack> tracks,
+    int startIndex, {
+    String? fromType,
+    String? fromId,
+    String? fromTitle,
+  }) async {
     state = state.copyWith(
       tracks: tracks,
       currentIndex: startIndex,
       isLoading: true,
+      sourceType: fromType,
+      sourceId: fromId,
+      sourceTitle: fromTitle,
     );
-    await _handler.playQueue(tracks, startIndex);
+    await _handler.playQueue(
+      tracks,
+      startIndex,
+      fromType: fromType,
+      fromId: fromId,
+      fromTitle: fromTitle,
+    );
   }
 
   /// Plays a single [track], optionally within a surrounding [queue].
@@ -186,14 +234,27 @@ class QueueNotifier extends StateNotifier<QueueState> {
     JellyfinTrack track, {
     List<JellyfinTrack>? queue,
     int queueIndex = 0,
+    String? fromType,
+    String? fromId,
+    String? fromTitle,
   }) async {
     final effectiveQueue = queue ?? [track];
     state = state.copyWith(
       tracks: effectiveQueue,
       currentIndex: queueIndex,
       isLoading: true,
+      sourceType: fromType,
+      sourceId: fromId,
+      sourceTitle: fromTitle,
     );
-    await _handler.playTrack(track, queue: queue, queueIndex: queueIndex);
+    await _handler.playTrack(
+      track,
+      queue: queue,
+      queueIndex: queueIndex,
+      fromType: fromType,
+      fromId: fromId,
+      fromTitle: fromTitle,
+    );
   }
 
   Future<void> play() => _handler.play();

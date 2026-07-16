@@ -115,7 +115,13 @@ class SmartMixDetailScreen extends ConsumerWidget {
                               label: 'Play All',
                               primary: true,
                               onTap: () {
-                                ref.read(queueNotifierProvider.notifier).playQueue(tracks, 0);
+                                ref.read(queueNotifierProvider.notifier).playQueue(
+                                  tracks,
+                                  0,
+                                  fromType: 'smart_mix',
+                                  fromId: mixType,
+                                  fromTitle: title,
+                                );
                                 context.push('/player');
                               },
                             ),
@@ -128,7 +134,13 @@ class SmartMixDetailScreen extends ConsumerWidget {
                               primary: false,
                               onTap: () {
                                 final s = [...tracks]..shuffle();
-                                ref.read(queueNotifierProvider.notifier).playQueue(s, 0);
+                                ref.read(queueNotifierProvider.notifier).playQueue(
+                                  s,
+                                  0,
+                                  fromType: 'smart_mix',
+                                  fromId: mixType,
+                                  fromTitle: title,
+                                );
                                 context.push('/player');
                               },
                             ),

@@ -136,14 +136,19 @@ class AlbumDetailScreen extends ConsumerWidget {
                           children: [                             Expanded(
                               child: _ActionButton(
                                 icon: Icons.play_arrow_rounded,
-                                label: 'Play All',
-                                onTap: () {
+                                label: 'Play All',                                 onTap: () {
                                   ref
                                       .read(recentSelectionsProvider.notifier)
                                       .addSelection(albumId, 'album');
                                   ref
                                       .read(queueNotifierProvider.notifier)
-                                      .playQueue(tracks, 0);
+                                      .playQueue(
+                                        tracks,
+                                        0,
+                                        fromType: 'album',
+                                        fromId: albumId,
+                                        fromTitle: album.name,
+                                      );
                                   ref
                                       .read(queueNotifierProvider.notifier)
                                       .setShuffleMode(AudioServiceShuffleMode.none);
@@ -164,7 +169,13 @@ class AlbumDetailScreen extends ConsumerWidget {
                                   final shuffled = [...tracks]..shuffle();
                                   ref
                                       .read(queueNotifierProvider.notifier)
-                                      .playQueue(shuffled, 0);
+                                      .playQueue(
+                                        shuffled,
+                                        0,
+                                        fromType: 'album',
+                                        fromId: albumId,
+                                        fromTitle: album.name,
+                                      );
                                   ref
                                       .read(queueNotifierProvider.notifier)
                                       .setShuffleMode(AudioServiceShuffleMode.all);

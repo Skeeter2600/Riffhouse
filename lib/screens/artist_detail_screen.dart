@@ -84,7 +84,13 @@ class ArtistDetailScreen extends ConsumerWidget {
                               ),
                               onPressed: () {
                                 ref.read(recentSelectionsProvider.notifier).addSelection(artistId, 'artist');
-                                ref.read(queueNotifierProvider.notifier).playQueue(tracks, 0);
+                                ref.read(queueNotifierProvider.notifier).playQueue(
+                                  tracks,
+                                  0,
+                                  fromType: 'artist',
+                                  fromId: artistId,
+                                  fromTitle: artist.name,
+                                );
                                 context.push('/player');
                               },
                             ),
@@ -103,7 +109,13 @@ class ArtistDetailScreen extends ConsumerWidget {
                               onPressed: () {
                                 ref.read(recentSelectionsProvider.notifier).addSelection(artistId, 'artist');
                                 final shuffledTracks = [...tracks]..shuffle();
-                                ref.read(queueNotifierProvider.notifier).playQueue(shuffledTracks, 0);
+                                ref.read(queueNotifierProvider.notifier).playQueue(
+                                  shuffledTracks,
+                                  0,
+                                  fromType: 'artist',
+                                  fromId: artistId,
+                                  fromTitle: artist.name,
+                                );
                                 context.push('/player');
                               },
                             ),

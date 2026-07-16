@@ -120,7 +120,13 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                             .addSelection(playlistId, 'playlist');
                                         ref
                                             .read(queueNotifierProvider.notifier)
-                                            .playQueue(tracks, 0);
+                                            .playQueue(
+                                              tracks,
+                                              0,
+                                              fromType: 'playlist',
+                                              fromId: playlistId,
+                                              fromTitle: playlist.name,
+                                            );
                                         ref
                                             .read(queueNotifierProvider.notifier)
                                             .setShuffleMode(AudioServiceShuffleMode.none);
@@ -141,7 +147,13 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                         final s = [...tracks]..shuffle();
                                         ref
                                             .read(queueNotifierProvider.notifier)
-                                            .playQueue(s, 0);
+                                            .playQueue(
+                                              s,
+                                              0,
+                                              fromType: 'playlist',
+                                              fromId: playlistId,
+                                              fromTitle: playlist.name,
+                                            );
                                         ref
                                             .read(queueNotifierProvider.notifier)
                                             .setShuffleMode(AudioServiceShuffleMode.all);

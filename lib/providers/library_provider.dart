@@ -1,13 +1,59 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:drift/drift.dart';
 
 import '../database/app_database.dart';
 import '../models/jellyfin_models.dart';
 import '../services/cache_service.dart';
+import '../services/jellyfin_service.dart';
 import 'auth_provider.dart';
 import 'database_provider.dart';
 import '../audio/queue_notifier.dart';
+
+// ---------------------------------------------------------------------------
+// Helpers for mapping between database models and network models
+// ---------------------------------------------------------------------------
+
+JellyfinTrack localTrackToJellyfin(LocalTrack local) {
+  List<String> artists = [];
+  List<String> genres = [];
+  try {
+    artists = List<String>.from(jsonDecode(local.artistsJson));
+  } catch (_) {}
+  try {
+    genres = List<String>.from(jsonDecode(local.genresJson));
+  } catch (_) {}
+  return JellyfinTrack(
+    id: local.jellyfinId,
+    name: local.name,
+    artists: artists,
+    albumArtist: local.albumArtist,
+    albumId: local.albumId,
+    albumName: local.albumName,
+    genres: genres,
+    durationMs: local.durationMs,
+    serverId: local.serverId,
+    imageTag: local.imageTag,
+    dateCreated: local.dateCreated,
+  );
+}
+
+LocalTracksCompanion jellyfinTrackToCompanion(JellyfinTrack track) {
+  return LocalTracksCompanion(
+    jellyfinId: Value(track.id),
+    name: Value(track.name),
+    artistsJson: Value(jsonEncode(track.artists)),
+    albumArtist: Value(track.albumArtist),
+    albumId: Value(track.albumId),
+    albumName: Value(track.albumName),
+    genresJson: Value(jsonEncode(track.genres)),
+    durationMs: Value(track.durationMs),
+    serverId: Value(track.serverId),
+    imageTag: Value(track.imageTag),
+    dateCreated: Value(track.dateCreated),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tracks
@@ -16,17 +62,112 @@ import '../audio/queue_notifier.dart';
 class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
   @override
   Future<List<JellyfinTrack>> build() async {
+    final db = ref.watch(databaseProvider);
     final service = ref.watch(jellyfinServiceProvider);
     if (service == null) return [];
-    return service.getTracks();
+
+    // Eagerly load from database
+    final localTracks = await db.getAllLocalTracks();
+    final cachedTracks = localTracks.map(localTrackToJellyfin).toList();
+
+    if (cachedTracks.isEmpty) {
+      // Database is empty! This is the first sync.
+      // We should perform a sync and return the results directly so the provider is in a loading state.
+      print('[TracksNotifier] Local database is empty. Performing initial library sync...');
+      return _syncInitial(db, service);
+    } else {
+      // Schedule background sync
+      _syncBackground(db, service);
+      return cachedTracks;
+    }
+  }
+
+  Future<List<JellyfinTrack>> _syncInitial(AppDatabase db, JellyfinService service) async {
+    try {
+      final remoteTracks = await service.getTracks();
+      final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
+      await db.bulkInsertLocalTracks(companions);
+      print('[TracksNotifier] Initial library sync complete. Saved ${remoteTracks.length} tracks.');
+      return remoteTracks;
+    } catch (e, stack) {
+      print('[TracksNotifier] Error in initial library sync: $e\n$stack');
+      return [];
+    }
+  }
+
+  Future<void> _syncBackground(AppDatabase db, JellyfinService service) async {
+    try {
+      const batchSize = 200;
+      int startIndex = 0;
+      final newTracks = <JellyfinTrack>[];
+      bool foundExisting = false;
+
+      while (!foundExisting) {
+        final page = await service.getTracksPaged(
+          startIndex: startIndex,
+          limit: batchSize,
+          sortBy: 'DateCreated',
+          sortOrder: 'Descending',
+        );
+
+        if (page.isEmpty) break;
+
+        for (final track in page) {
+          final exists = await db.getLocalTrack(track.id) != null;
+          if (exists) {
+            foundExisting = true;
+            break;
+          }
+          newTracks.add(track);
+        }
+
+        if (page.length < batchSize) break;
+        startIndex += page.length;
+      }
+
+      if (newTracks.isNotEmpty) {
+        print('[TracksNotifier] Found ${newTracks.length} new tracks in background sync. Saving to database...');
+        final companions = newTracks.map(jellyfinTrackToCompanion).toList();
+        await db.bulkInsertLocalTracks(companions);
+
+        // Reload all tracks and update state
+        final updatedLocal = await db.getAllLocalTracks();
+        state = AsyncData(updatedLocal.map(localTrackToJellyfin).toList());
+      } else {
+        print('[TracksNotifier] Background sync complete: no new tracks found.');
+      }
+    } catch (e, stack) {
+      print('[TracksNotifier] Error in background sync: $e\n$stack');
+    }
   }
 
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
       final service = ref.read(jellyfinServiceProvider);
+      final db = ref.read(databaseProvider);
       if (service == null) return [];
-      return service.getTracks();
+
+      print('[TracksNotifier] Starting full library sync...');
+      final remoteTracks = await service.getTracks();
+
+      // Perform database reconciliation
+      final remoteIds = remoteTracks.map((t) => t.id).toSet();
+      final localTracks = await db.getAllLocalTracks();
+
+      // Delete any tracks that are no longer on the server
+      for (final local in localTracks) {
+        if (!remoteIds.contains(local.jellyfinId)) {
+          await db.deleteLocalTrack(local.jellyfinId);
+        }
+      }
+
+      // Upsert all fetched tracks
+      final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
+      await db.bulkInsertLocalTracks(companions);
+
+      print('[TracksNotifier] Full library sync complete. Synced ${remoteTracks.length} tracks.');
+      return remoteTracks;
     });
   }
 }

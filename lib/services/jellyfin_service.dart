@@ -145,7 +145,7 @@ class JellyfinService {
           'Users/$userId/Items',
           queryParameters: {
             'IncludeItemTypes': 'Audio',
-            'Fields': 'Artists,AlbumArtist,Genres,MediaSources,AlbumId',
+            'Fields': 'Artists,AlbumArtist,Genres,MediaSources,AlbumId,DateCreated',
             'Recursive': true,
             'Limit': batchSize,
             'StartIndex': startIndex,
@@ -166,6 +166,42 @@ class JellyfinService {
     } on DioException catch (e) {
       print('getTracks failed: ${e.message}');
       return allTracks; // return whatever we got before the error
+    }
+  }
+
+  /// Fetches a single page of audio tracks.
+  Future<List<JellyfinTrack>> getTracksPaged({
+    required int startIndex,
+    required int limit,
+    String? sortBy,
+    String? sortOrder,
+  }) async {
+    try {
+      final queryParams = {
+        'IncludeItemTypes': 'Audio',
+        'Fields': 'Artists,AlbumArtist,Genres,MediaSources,AlbumId,DateCreated',
+        'Recursive': true,
+        'Limit': limit,
+        'StartIndex': startIndex,
+      };
+      if (sortBy != null) {
+        queryParams['SortBy'] = sortBy;
+      }
+      if (sortOrder != null) {
+        queryParams['SortOrder'] = sortOrder;
+      }
+
+      final response = await _dio.get(
+        'Users/$userId/Items',
+        queryParameters: queryParams,
+        options: Options(headers: _headers),
+      );
+
+      final items = (response.data?['Items'] as List?) ?? [];
+      return items.map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>)).toList();
+    } on DioException catch (e) {
+      print('getTracksPaged failed: ${e.message}');
+      return [];
     }
   }
 
