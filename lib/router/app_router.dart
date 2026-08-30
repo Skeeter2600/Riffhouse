@@ -16,6 +16,7 @@ import '../screens/podcast_detail_screen.dart';
 import '../screens/search_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/smart_mix_detail_screen.dart';
+import '../screens/daily_mix_config_screen.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
@@ -203,6 +204,10 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => SmartMixDetailScreen(
           mixType: state.pathParameters['mixType']!,
         ),
+      ),
+      GoRoute(
+        path: '/daily-mix-config',
+        builder: (context, state) => const DailyMixConfigScreen(),
       ),
       GoRoute(
         path: '/settings',

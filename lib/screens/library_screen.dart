@@ -210,10 +210,16 @@ class LibraryScreen extends ConsumerWidget {
     );
   }
 
-  Widget _sectionHeader(BuildContext context, String title) {
+  Widget _sectionHeader(BuildContext context, String title, {Widget? action}) {
     return Padding(
       padding: const EdgeInsets.only(left: 20, right: 20, top: 16, bottom: 10),
-      child: Text(title, style: Theme.of(context).textTheme.headlineSmall),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.headlineSmall),
+          if (action != null) action,
+        ],
+      ),
     );
   }
 

@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:drift/drift.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../database/app_database.dart';
+import '../models/daily_mix_config.dart';
 import '../models/jellyfin_models.dart';
 import '../models/podcast_episode.dart';
 import '../models/podcast_feed.dart';
@@ -12,6 +14,10 @@ import 'podcast_service.dart';
 class PlaylistService {
   final AppDatabase db;
   JellyfinService jellyfinService;
+
+  static const _dailyMixConfigKey = 'daily_mix_config_v1';
+  static const _genreStatsKey = 'genre_playback_stats';
+  static const _playTimestampsKey = 'track_play_timestamps_v1';
 
   PlaylistService(this.db, this.jellyfinService);
 
@@ -206,177 +212,336 @@ class PlaylistService {
   }
 
   // ---------------------------------------------------------------------------
-  // Daily Drive (podcast + music interleave)
+  // Custom Daily Mix / Daily Drive
   // ---------------------------------------------------------------------------
 
-  /// Builds a Daily Drive queue interleaving podcast episodes and music:
-  ///
-  /// 1. Most recent episode of Up First
-  /// 2. 5 frequently played songs (highest playCount)
-  /// 3. Most recent episode of Marketplace
-  /// 4. 5 recently listened songs (most recent lastPlayedAt)
-  /// 5. 1 unlistened podcast episode from any other subscribed feed
-  /// 6. 20 undiscovered (unplayed) songs, shuffled randomly
+  Future<DailyMixConfig> getDailyMixConfig() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(_dailyMixConfigKey);
+      if (jsonStr != null && jsonStr.isNotEmpty) {
+        final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
+        return DailyMixConfig.fromJson(decoded);
+      }
+    } catch (e) {
+      print('[PlaylistService] Error loading daily mix config: $e');
+    }
+    return DailyMixConfig.defaultConfig();
+  }
+
+  Future<void> saveDailyMixConfig(DailyMixConfig config) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_dailyMixConfigKey, jsonEncode(config.toJson()));
+  }
+
+  Future<void> resetDailyMixConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_dailyMixConfigKey);
+  }
+
+  /// Generates the Daily Drive / Mix based on the user's custom configuration.
   Future<List<JellyfinTrack>> getDailyDrive({
+    required List<JellyfinTrack> libraryTracks,
+    required PodcastService podcastService,
+    DailyMixConfig? customConfig,
+  }) async {
+    final config = customConfig ?? await getDailyMixConfig();
+    return generateCustomDailyMix(
+      config: config,
+      libraryTracks: libraryTracks,
+      podcastService: podcastService,
+    );
+  }
+
+  /// Evaluates each slot in [config] and builds a personalized queue.
+  Future<List<JellyfinTrack>> generateCustomDailyMix({
+    required DailyMixConfig config,
     required List<JellyfinTrack> libraryTracks,
     required PodcastService podcastService,
   }) async {
     final result = <JellyfinTrack>[];
+    final usedTrackIds = <String>{};
+    final usedEpisodeGuids = <String>{};
+    final rng = Random();
 
-    // Load playback records for music selection.
+    // Load playback records for music selections
     final allRecords = await db.getAllPlaybackRecords();
     final recordMap = <String, PlaybackRecord>{
       for (final r in allRecords) r.jellyfinId: r,
     };
 
-    // Load subscribed feeds once.
-    List<PodcastFeed> feeds = [];
+    // Load subscribed feeds once
+    List<PodcastFeed> subscribedFeeds = [];
     try {
-      feeds = await podcastService.getSubscribedFeeds();
+      subscribedFeeds = await podcastService.getSubscribedFeeds();
     } catch (e) {
-      print('[PlaylistService] getDailyDrive: Failed to load feeds: $e');
+      print('[PlaylistService] generateCustomDailyMix: Failed to load feeds: $e');
     }
 
-    // ── 1. Most recent episode of Up First ──────────────────────────────
+    Set<String> listenedGuids = {};
     try {
-      final upFirstFeed = feeds.cast<PodcastFeed?>().firstWhere(
-        (f) => f!.id == 'up_first',
-        orElse: () => null,
-      );
-      if (upFirstFeed != null) {
-        final episodes = await podcastService.fetchEpisodes(upFirstFeed);
-        if (episodes.isNotEmpty) {
-          episodes.sort((a, b) => b.pubDate.compareTo(a.pubDate));
-          result.add(episodes.first.toJellyfinTrack());
-        }
+      listenedGuids = await podcastService.getListenedEpisodes();
+    } catch (_) {}
+
+    // Cache of fetched episodes by feed to avoid duplicate network calls
+    final feedEpisodesCache = <String, List<PodcastEpisode>>{};
+
+    Future<List<PodcastEpisode>> getEpisodesForFeed(PodcastFeed feed) async {
+      if (feedEpisodesCache.containsKey(feed.id)) {
+        return feedEpisodesCache[feed.id]!;
       }
-    } catch (e) {
-      print('[PlaylistService] getDailyDrive: Up First failed: $e');
-    }
-
-    // ── 2. 5 frequently played songs (highest playCount) ────────────────
-    final playedTracks = libraryTracks.where((t) {
-      final rec = recordMap[t.id];
-      return rec != null && rec.playCount > 0;
-    }).toList();
-    playedTracks.sort((a, b) {
-      final countA = recordMap[a.id]?.playCount ?? 0;
-      final countB = recordMap[b.id]?.playCount ?? 0;
-      return countB.compareTo(countA);
-    });
-    result.addAll(playedTracks.take(5));
-
-    // ── 3. Most recent episode of Marketplace ───────────────────────────
-    try {
-      final marketplaceFeed = feeds.cast<PodcastFeed?>().firstWhere(
-        (f) => f!.id == 'marketplace',
-        orElse: () => null,
-      );
-      if (marketplaceFeed != null) {
-        final episodes = await podcastService.fetchEpisodes(marketplaceFeed);
-        if (episodes.isNotEmpty) {
-          episodes.sort((a, b) => b.pubDate.compareTo(a.pubDate));
-          result.add(episodes.first.toJellyfinTrack());
-        }
+      try {
+        final eps = await podcastService.fetchEpisodes(feed);
+        feedEpisodesCache[feed.id] = eps;
+        return eps;
+      } catch (_) {
+        return [];
       }
-    } catch (e) {
-      print('[PlaylistService] getDailyDrive: Marketplace failed: $e');
     }
 
-    // ── 4. 5 recently listened songs (most recent lastPlayedAt) ─────────
-    final recentlyPlayed = libraryTracks.where((t) {
-      final rec = recordMap[t.id];
-      return rec != null && rec.lastPlayedAt != null;
-    }).toList();
-    recentlyPlayed.sort((a, b) {
-      final dateA = recordMap[a.id]!.lastPlayedAt!;
-      final dateB = recordMap[b.id]!.lastPlayedAt!;
-      return dateB.compareTo(dateA);
-    });
-    // Avoid duplicates with the frequently-played segment.
-    final usedIds = result.map((t) => t.id).toSet();
-    final recentUnique = recentlyPlayed.where((t) => !usedIds.contains(t.id));
-    result.addAll(recentUnique.take(5));
+    for (final slot in config.slots) {
+      if (slot.slotType == DailyMixSlotType.podcast) {
+        // --- Process Podcast Slot ---
+        List<PodcastFeed> candidateFeeds = [];
+        if (slot.podcastSelectionType == PodcastSelectionType.specific) {
+          if (slot.podcastFeedIds.isNotEmpty) {
+            candidateFeeds = subscribedFeeds
+                .where((f) => slot.podcastFeedIds.contains(f.id))
+                .toList();
+          }
+        } else if (slot.podcastSelectionType == PodcastSelectionType.news) {
+          candidateFeeds = subscribedFeeds
+              .where((f) =>
+                  f.category.toLowerCase() == 'news' ||
+                  f.id == 'up_first' ||
+                  f.id == 'marketplace')
+              .toList();
+        } else if (slot.podcastSelectionType == PodcastSelectionType.nonNews) {
+          candidateFeeds = subscribedFeeds
+              .where((f) =>
+                  f.category.toLowerCase() != 'news' &&
+                  f.id != 'up_first' &&
+                  f.id != 'marketplace')
+              .toList();
+        } else {
+          candidateFeeds = List.from(subscribedFeeds);
+        }
 
-    // Get unplayed discovery tracks beforehand
-    final rng = Random();
-    final unplayed = libraryTracks.where((t) {
-      final rec = recordMap[t.id];
-      return rec == null || rec.playCount == 0;
-    }).toList();
-    unplayed.shuffle(rng);
+        if (candidateFeeds.isEmpty && subscribedFeeds.isNotEmpty) {
+          candidateFeeds = List.from(subscribedFeeds);
+        }
 
-    var discoveryIndex = 0;
+        if (candidateFeeds.isNotEmpty) {
+          // Shuffle candidate feeds so if multiple were selected, one is picked randomly
+          final shuffledFeeds = List<PodcastFeed>.from(candidateFeeds)..shuffle(rng);
+          int episodesAdded = 0;
 
-    // ── 5. 2 unheard non-news podcast episodes of different genres with 5 songs in between ──────
-    try {
-      final nonNewsFeeds = feeds.where(
-        (f) => f.id != 'up_first' && f.id != 'marketplace' && f.category.toLowerCase() != 'news',
-      ).toList();
-      if (nonNewsFeeds.isNotEmpty) {
-        final listenedGuids = await podcastService.getListenedEpisodes();
-        
-        final feedEpisodesMap = <PodcastFeed, List<PodcastEpisode>>{};
-        await Future.wait(
-          nonNewsFeeds.map((feed) async {
-            try {
-              final eps = await podcastService.fetchEpisodes(feed);
-              final unheardEps = eps.where((ep) => !listenedGuids.contains(ep.guid)).toList();
-              if (unheardEps.isNotEmpty) {
-                unheardEps.sort((a, b) => b.pubDate.compareTo(a.pubDate));
-                feedEpisodesMap[feed] = unheardEps;
+          for (final feed in shuffledFeeds) {
+            if (episodesAdded >= slot.podcastCount) break;
+
+            final episodes = await getEpisodesForFeed(feed);
+            if (episodes.isEmpty) continue;
+
+            final sortedEps = List<PodcastEpisode>.from(episodes)
+              ..sort((a, b) => b.pubDate.compareTo(a.pubDate));
+
+            for (final ep in sortedEps) {
+              if (episodesAdded >= slot.podcastCount) break;
+              if (usedEpisodeGuids.contains(ep.guid)) continue;
+
+              final isListened = listenedGuids.contains(ep.guid);
+              if (slot.episodeSelection == EpisodeSelectionMode.latestUnheard && isListened) {
+                continue;
               }
-            } catch (_) {}
-          }),
-        );
-        
-        if (feedEpisodesMap.isNotEmpty) {
-          final sortedFeeds = feedEpisodesMap.keys.toList()
-            ..sort((a, b) {
-              final dateA = feedEpisodesMap[a]!.first.pubDate;
-              final dateB = feedEpisodesMap[b]!.first.pubDate;
+
+              usedEpisodeGuids.add(ep.guid);
+              result.add(ep.toJellyfinTrack());
+              episodesAdded++;
+            }
+          }
+        }
+      } else {
+        // --- Process Music Slot ---
+        final count = slot.isCountRange
+            ? (slot.minCount + rng.nextInt(max(1, slot.maxCount - slot.minCount + 1)))
+            : slot.fixedCount;
+
+        if (count <= 0) continue;
+
+        List<JellyfinTrack> candidatePool = [];
+
+        switch (slot.musicSourceType) {
+          case MusicSourceType.frequentlyPlayed:
+            candidatePool = await getFrequentlyPlayedTracks(
+              libraryTracks: libraryTracks,
+              count: count,
+            );
+            break;
+
+          case MusicSourceType.recentlyPlayed:
+            final recent = libraryTracks.where((t) {
+              final rec = recordMap[t.id];
+              return rec != null && rec.playCount > 0;
+            }).toList();
+            recent.sort((a, b) {
+              final dateA = recordMap[a.id]?.lastPlayedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+              final dateB = recordMap[b.id]?.lastPlayedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
               return dateB.compareTo(dateA);
             });
-          
-          final firstFeed = sortedFeeds.first;
-          final firstEp = feedEpisodesMap[firstFeed]!.first;
-          result.add(firstEp.toJellyfinTrack());
-          
-          // ── 6. 5 songs between the 2 podcasts ──────
-          final first5Songs = unplayed.skip(discoveryIndex).take(5).toList();
-          result.addAll(first5Songs);
-          discoveryIndex += first5Songs.length;
-          
-          // ── 7. Second unheard non-news podcast episode of different genre ──
-          final firstGenre = firstFeed.category;
-          final differentGenreFeed = sortedFeeds.cast<PodcastFeed?>().firstWhere(
-            (f) => f!.category != firstGenre,
-            orElse: () => null,
-          );
-          
-          if (differentGenreFeed != null) {
-            final secondEp = feedEpisodesMap[differentGenreFeed]!.first;
-            result.add(secondEp.toJellyfinTrack());
-          } else if (sortedFeeds.length > 1) {
-            final secondFeed = sortedFeeds.firstWhere((f) => f != firstFeed);
-            final secondEp = feedEpisodesMap[secondFeed]!.first;
-            result.add(secondEp.toJellyfinTrack());
+            candidatePool = recent;
+            break;
+
+          case MusicSourceType.undiscovered:
+            final unplayed = libraryTracks.where((t) {
+              final rec = recordMap[t.id];
+              return rec == null || rec.playCount == 0;
+            }).toList()..shuffle(rng);
+            candidatePool = unplayed;
+            break;
+
+          case MusicSourceType.smartMix:
+            candidatePool = await getSmartMix(
+              count: count * 2,
+              libraryTracks: libraryTracks,
+            );
+            break;
+
+          case MusicSourceType.genre:
+            if (slot.selectedGenres.isNotEmpty) {
+              candidatePool = libraryTracks.where((t) {
+                return t.genres.any((g) => slot.selectedGenres.any(
+                    (sg) => g.toLowerCase().contains(sg.toLowerCase())));
+              }).toList()..shuffle(rng);
+            } else {
+              candidatePool = List.from(libraryTracks)..shuffle(rng);
+            }
+            break;
+
+          case MusicSourceType.playlist:
+            if (slot.selectedPlaylistIds.isNotEmpty) {
+              final playlistTracks = <JellyfinTrack>[];
+              for (final pid in slot.selectedPlaylistIds) {
+                try {
+                  final tracks = await jellyfinService.getPlaylistTracks(pid);
+                  playlistTracks.addAll(tracks);
+                } catch (_) {}
+              }
+              candidatePool = playlistTracks..shuffle(rng);
+            }
+            break;
+
+          case MusicSourceType.artist:
+            if (slot.selectedArtistIds.isNotEmpty) {
+              candidatePool = libraryTracks.where((t) {
+                return t.artists.any((a) => slot.selectedArtistIds.any(
+                    (sa) => a.toLowerCase().contains(sa.toLowerCase())));
+              }).toList()..shuffle(rng);
+            }
+            break;
+        }
+
+        // Deduplicate against tracks already added
+        final available = candidatePool.where((t) => !usedTrackIds.contains(t.id)).toList();
+        final picked = available.take(count).toList();
+
+        for (final t in picked) {
+          usedTrackIds.add(t.id);
+          result.add(t);
+        }
+
+        // If not enough unique candidates, pad from remaining library tracks
+        if (picked.length < count) {
+          final remaining = libraryTracks
+              .where((t) => !usedTrackIds.contains(t.id))
+              .toList()..shuffle(rng);
+          final needed = count - picked.length;
+          for (final t in remaining.take(needed)) {
+            usedTrackIds.add(t.id);
+            result.add(t);
           }
         }
       }
-    } catch (e) {
-      print('[PlaylistService] getDailyDrive: Non-news podcasts failed: $e');
     }
-
-    // ── 8. 20 undiscovered (unplayed) songs, shuffled randomly ──────────
-    final remaining20Songs = unplayed.skip(discoveryIndex).take(20).toList();
-    result.addAll(remaining20Songs);
 
     return result;
   }
 
   // ---------------------------------------------------------------------------
-  // Server playlist creation
+  // Genre Listen Recording & Affinity
+  // ---------------------------------------------------------------------------
+
+  Future<void> _recordGenrePlays(List<String> genres) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(_genreStatsKey);
+      final Map<String, dynamic> stats = jsonStr != null ? jsonDecode(jsonStr) : {};
+
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      for (final genre in genres) {
+        final clean = genre.trim();
+        if (clean.isEmpty) continue;
+
+        final current = stats[clean] as Map<String, dynamic>? ?? {
+          'count': 0,
+          'lastPlayedAt': 0,
+        };
+        final currentCount = (current['count'] as int?) ?? 0;
+        stats[clean] = {
+          'count': currentCount + 1,
+          'lastPlayedAt': nowMs,
+        };
+      }
+
+      await prefs.setString(_genreStatsKey, jsonEncode(stats));
+    } catch (e) {
+      print('[PlaylistService] Error recording genre plays: $e');
+    }
+  }
+
+  /// Returns user's top listened genres sorted by play count descending.
+  Future<List<String>> getTopListenedGenres({int limit = 10}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(_genreStatsKey);
+      if (jsonStr != null && jsonStr.isNotEmpty) {
+        final Map<String, dynamic> stats = jsonDecode(jsonStr);
+        final entries = stats.entries.toList();
+        entries.sort((a, b) {
+          final countA = (a.value['count'] as int?) ?? 0;
+          final countB = (b.value['count'] as int?) ?? 0;
+          return countB.compareTo(countA);
+        });
+        return entries.map((e) => e.key).take(limit).toList();
+      }
+    } catch (e) {
+      print('[PlaylistService] Error getting top genres: $e');
+    }
+    return [];
+  }
+
+  /// Returns user's recently listened genres.
+  Future<List<String>> getRecentlyListenedGenres({int limit = 10}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonStr = prefs.getString(_genreStatsKey);
+      if (jsonStr != null && jsonStr.isNotEmpty) {
+        final Map<String, dynamic> stats = jsonDecode(jsonStr);
+        final entries = stats.entries.toList();
+        entries.sort((a, b) {
+          final timeA = (a.value['lastPlayedAt'] as int?) ?? 0;
+          final timeB = (b.value['lastPlayedAt'] as int?) ?? 0;
+          return timeB.compareTo(timeA);
+        });
+        return entries.map((e) => e.key).take(limit).toList();
+      }
+    } catch (e) {
+      print('[PlaylistService] Error getting recent genres: $e');
+    }
+    return [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Server playlist management
   // ---------------------------------------------------------------------------
 
   /// Creates a new playlist on the server and saves it locally.
@@ -404,8 +569,6 @@ class PlaylistService {
   /// Adds a track to a playlist on the server and updates local database cache.
   Future<bool> addTrackToPlaylist(String playlistId, String trackId) async {
     final success = await jellyfinService.addTrackToPlaylist(playlistId, trackId);
-    if (!success) return false;
-
     // Update local database cache
     final existing = await db.getLocalPlaylist(playlistId);
     if (existing != null) {
@@ -424,7 +587,29 @@ class PlaylistService {
         ));
       }
     }
-    return true;
+    return success;
+  }
+
+  /// Removes a track from a playlist on the server and updates local database cache.
+  Future<bool> removeTrackFromPlaylist(String playlistId, String trackId) async {
+    final success = await jellyfinService.removeTrackFromPlaylist(playlistId, trackId);
+    // Update local database cache
+    final existing = await db.getLocalPlaylist(playlistId);
+    if (existing != null) {
+      List<dynamic> ids = [];
+      try {
+        ids = jsonDecode(existing.trackIdsJson);
+      } catch (_) {}
+      ids.remove(trackId);
+      await db.upsertLocalPlaylist(LocalPlaylistsCompanion(
+        id: Value(existing.id),
+        jellyfinId: Value(existing.jellyfinId),
+        name: Value(existing.name),
+        trackIdsJson: Value(jsonEncode(ids)),
+        lastSyncedAt: Value(DateTime.now()),
+      ));
+    }
+    return success;
   }
 
   /// Deletes a playlist from the server and local database.
@@ -445,9 +630,125 @@ class PlaylistService {
   // Playback recording
   // ---------------------------------------------------------------------------
 
-  /// Records a play event for [jellyfinId], incrementing playCount.
+  /// Records a play event for [jellyfinId], incrementing playCount and tracking genre and timestamp statistics.
   Future<void> recordPlay(String jellyfinId) async {
     await db.incrementPlayCount(jellyfinId);
+
+    // Record timestamp for time-windowed frequency tracking
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final historyStr = prefs.getString(_playTimestampsKey);
+      final Map<String, dynamic> history = historyStr != null ? jsonDecode(historyStr) : {};
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final List<dynamic> list = history[jellyfinId] != null ? List.from(history[jellyfinId] as List) : [];
+      list.add(nowMs);
+
+      // Keep plays from the last 90 days to avoid unbounded growth
+      final cutoff90Days = DateTime.now().subtract(const Duration(days: 90)).millisecondsSinceEpoch;
+      history[jellyfinId] = list.where((t) => (t as int) >= cutoff90Days).toList();
+      await prefs.setString(_playTimestampsKey, jsonEncode(history));
+    } catch (e) {
+      print('[PlaylistService] Error recording play timestamp for $jellyfinId: $e');
+    }
+
+    try {
+      final local = await db.getLocalTrack(jellyfinId);
+      if (local != null) {
+        List<String> genres = [];
+        try {
+          genres = List<String>.from(jsonDecode(local.genresJson));
+        } catch (_) {}
+        if (genres.isNotEmpty) {
+          await _recordGenrePlays(genres);
+        }
+      }
+    } catch (e) {
+      print('[PlaylistService] Error recording genre plays for $jellyfinId: $e');
+    }
+  }
+
+  /// Returns map of track jellyfinId -> listen count in the given time window (default: last 3 weeks / 21 days).
+  Future<Map<String, int>> getRecentPlayCounts({Duration window = const Duration(days: 21)}) async {
+    final cutoff = DateTime.now().subtract(window).millisecondsSinceEpoch;
+    final Map<String, int> result = {};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final historyStr = prefs.getString(_playTimestampsKey);
+      if (historyStr != null && historyStr.isNotEmpty) {
+        final Map<String, dynamic> history = jsonDecode(historyStr);
+        for (final entry in history.entries) {
+          final list = entry.value as List?;
+          if (list != null) {
+            final count = list.where((t) => (t as int) >= cutoff).length;
+            if (count > 0) {
+              result[entry.key] = count;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('[PlaylistService] Error getting recent play counts: $e');
+    }
+
+    // Also include database records where lastPlayedAt is within the 3-week window if not in history
+    try {
+      final records = await db.getAllPlaybackRecords();
+      final cutoffDate = DateTime.now().subtract(window);
+      for (final r in records) {
+        if (!result.containsKey(r.jellyfinId) && r.playCount > 0 && r.lastPlayedAt.isAfter(cutoffDate)) {
+          result[r.jellyfinId] = r.playCount;
+        }
+      }
+    } catch (_) {}
+
+    return result;
+  }
+
+  /// Selects frequently played tracks from the last 3 weeks.
+  ///
+  /// - If [count] <= 25: randomly selects [count] tracks from the top 25 most played in last 3 weeks.
+  /// - If [count] > 25: selects the top [count] songs in the last 3 weeks, shuffled in order.
+  Future<List<JellyfinTrack>> getFrequentlyPlayedTracks({
+    required List<JellyfinTrack> libraryTracks,
+    required int count,
+  }) async {
+    final recentCounts = await getRecentPlayCounts(window: const Duration(days: 21));
+    final rng = Random();
+
+    // Only include tracks with plays in the last 3 weeks
+    final playedInLast3Weeks = libraryTracks.where((t) {
+      final c = recentCounts[t.id];
+      return c != null && c > 0;
+    }).toList();
+
+    // Sort descending by play count in the last 3 weeks
+    playedInLast3Weeks.sort((a, b) {
+      final countA = recentCounts[a.id] ?? 0;
+      final countB = recentCounts[b.id] ?? 0;
+      return countB.compareTo(countA);
+    });
+
+    List<JellyfinTrack> picked;
+    if (count <= 25) {
+      // Random selection of count from the top 25
+      final top25 = playedInLast3Weeks.take(25).toList();
+      top25.shuffle(rng);
+      picked = top25.take(count).toList();
+    } else {
+      // If count > 25, take the top count songs and shuffle in order
+      final topX = playedInLast3Weeks.take(count).toList();
+      topX.shuffle(rng);
+      picked = topX;
+    }
+
+    // If there aren't enough played tracks in the last 3 weeks, pad with other library tracks
+    if (picked.length < count) {
+      final usedIds = picked.map((t) => t.id).toSet();
+      final remaining = libraryTracks.where((t) => !usedIds.contains(t.id)).toList()..shuffle(rng);
+      picked.addAll(remaining.take(count - picked.length));
+    }
+
+    return picked;
   }
 
   /// Records a skip event for [jellyfinId], incrementing skipCount.
@@ -455,3 +756,4 @@ class PlaylistService {
     await db.incrementSkipCount(jellyfinId);
   }
 }
+

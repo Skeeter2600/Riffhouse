@@ -406,8 +406,11 @@ class _TrackItem extends ConsumerWidget {
               color: AppColors.textSecondary, fontSize: 12),
           maxLines: 1,
           overflow: TextOverflow.ellipsis),
-      trailing: const Icon(Icons.more_vert_rounded,
-          color: AppColors.textMuted, size: 20),
+      trailing: IconButton(
+        icon: const Icon(Icons.more_vert_rounded,
+            color: AppColors.textMuted, size: 20),
+        onPressed: () => _showContextMenu(context, ref),
+      ),
       onTap: () {
         ref.read(recentSelectionsProvider.notifier).addSelection(playlistId, 'playlist');
         ref.read(queueNotifierProvider.notifier).playQueue(queue, index);
@@ -469,21 +472,42 @@ class _TrackItem extends ConsumerWidget {
                 }
               },
             ),
-             ListTile(
-               leading: const Icon(Icons.playlist_add, color: AppColors.primary),
-               title: const Text('Add to Other Playlist',
-                   style: TextStyle(color: AppColors.textPrimary)),
-               onTap: () {
-                 Navigator.pop(ctx);
-                 showAddToPlaylistBottomSheet(context, ref, track);
-               },
-             ),
-             ListTile(
-               leading: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
-               title: const Text('Remove from Playlist',
-                   style: TextStyle(color: AppColors.textPrimary)),
-               onTap: () => Navigator.pop(ctx),
-             ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add, color: AppColors.primary),
+              title: const Text('Add to Other Playlist',
+                  style: TextStyle(color: AppColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                showAddToPlaylistBottomSheet(context, ref, track);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.remove_circle_outline, color: Colors.redAccent),
+              title: const Text('Remove from Playlist',
+                  style: TextStyle(color: AppColors.textPrimary)),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final playlistService = ref.read(playlistServiceProvider);
+                final success = await playlistService.removeTrackFromPlaylist(playlistId, track.id);
+                if (success) {
+                  ref.invalidate(playlistTracksProvider(playlistId));
+                  ref.invalidate(playlistsProvider);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Removed "${track.name}" from playlist'),
+                      backgroundColor: AppColors.primary,
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Failed to remove track from playlist'),
+                      backgroundColor: Colors.redAccent,
+                    ),
+                  );
+                }
+              },
+            ),
             const SizedBox(height: 8),
           ],
         ),

@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/jellyfin_models.dart';
 import '../providers/library_provider.dart';
 import '../providers/auth_provider.dart';
-import '../services/playlist_service.dart';
+import '../providers/database_provider.dart';
 import '../theme/app_theme.dart';
 
 void showAddToPlaylistBottomSheet(BuildContext context, WidgetRef ref, JellyfinTrack track) {
@@ -75,24 +75,33 @@ void showAddToPlaylistBottomSheet(BuildContext context, WidgetRef ref, JellyfinT
                           subtitle: Text('${playlist.trackCount} tracks', style: const TextStyle(color: AppColors.textMuted, fontSize: 12)),
                           onTap: () async {
                             Navigator.pop(ctx);
+                            // Cache track metadata locally
+                            try {
+                              await ref.read(databaseProvider).upsertLocalTrack(jellyfinTrackToCompanion(track));
+                            } catch (_) {}
+
                             final playlistService = ref.read(playlistServiceProvider);
                             final success = await playlistService.addTrackToPlaylist(playlist.id, track.id);
                             if (success) {
                               ref.invalidate(playlistsProvider);
                               ref.invalidate(playlistTracksProvider(playlist.id));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Added "${track.name}" to "${playlist.name}"'),
-                                  backgroundColor: AppColors.primary,
-                                ),
-                              );
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Added "${track.name}" to "${playlist.name}"'),
+                                    backgroundColor: AppColors.primary,
+                                  ),
+                                );
+                              }
                             } else {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Failed to add track to playlist'),
-                                  backgroundColor: Colors.redAccent,
-                                ),
-                              );
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Failed to add track to playlist'),
+                                    backgroundColor: Colors.redAccent,
+                                  ),
+                                );
+                              }
                             }
                           },
                         );
@@ -113,7 +122,7 @@ void _showCreateAndAddDialog(BuildContext context, WidgetRef ref, JellyfinTrack 
   final controller = TextEditingController();
   showDialog(
     context: context,
-    builder: (ctx) => AlertDialog(
+    builder: (dialogCtx) => AlertDialog(
       backgroundColor: AppColors.card,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       title: const Text('New Playlist', style: TextStyle(color: AppColors.textPrimary)),
@@ -128,31 +137,41 @@ void _showCreateAndAddDialog(BuildContext context, WidgetRef ref, JellyfinTrack 
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(ctx),
+          onPressed: () => Navigator.pop(dialogCtx),
           child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
         ),
         ElevatedButton(
           onPressed: () async {
             final name = controller.text.trim();
             if (name.isNotEmpty) {
-              Navigator.pop(ctx);
+              Navigator.pop(dialogCtx);
+              // Cache track metadata locally
+              try {
+                await ref.read(databaseProvider).upsertLocalTrack(jellyfinTrackToCompanion(track));
+              } catch (_) {}
+
               final playlistService = ref.read(playlistServiceProvider);
               final newId = await playlistService.createPlaylistOnServer(name, [track.id]);
               if (newId != null) {
                 ref.invalidate(playlistsProvider);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('Created playlist "$name" and added "${track.name}"'),
-                    backgroundColor: AppColors.primary,
-                  ),
-                );
+                ref.invalidate(playlistTracksProvider(newId));
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Created playlist "$name" and added "${track.name}"'),
+                      backgroundColor: AppColors.primary,
+                    ),
+                  );
+                }
               } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Failed to create playlist'),
-                    backgroundColor: Colors.redAccent,
-                  ),
-                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Failed to create playlist'),
+                      backgroundColor: Colors.redAccent,
+                    ),
+                  );
+                }
               }
             }
           },

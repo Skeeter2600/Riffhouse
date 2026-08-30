@@ -4,9 +4,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart';
 
 import '../database/app_database.dart';
+import '../models/daily_mix_config.dart';
 import '../models/jellyfin_models.dart';
 import '../services/cache_service.dart';
 import '../services/jellyfin_service.dart';
+import '../services/playlist_service.dart';
 import 'auth_provider.dart';
 import 'database_provider.dart';
 import 'podcast_provider.dart';
@@ -349,26 +351,140 @@ class _CachedMix {
   _CachedMix(this.tracks, this.generatedAt);
 }
 
-DateTime _next6am(DateTime from) {
-  final today6am = DateTime(from.year, from.month, from.day, 6);
-  return from.isBefore(today6am) ? today6am : today6am.add(const Duration(days: 1));
+DateTime _nextMidnight(DateTime from) {
+  return DateTime(from.year, from.month, from.day + 1);
 }
 
-bool _isMixCacheValid(String key) {
-  final cached = _mixCache[key];
-  if (cached == null) return false;
-  return DateTime.now().isBefore(_next6am(cached.generatedAt));
+bool _isMixCacheValid(DateTime generatedAt) {
+  return DateTime.now().isBefore(_nextMidnight(generatedAt));
 }
 
-final Map<String, _CachedMix> _mixCache = {};
+final Map<String, _CachedMix> _mixMemoryCache = {};
+const _smartMixStoragePrefix = 'smart_mix_persisted_cache_v2_';
+
+Future<List<JellyfinTrack>?> _getPersistedMix(String mixType) async {
+  // Check in-memory cache first
+  final mem = _mixMemoryCache[mixType];
+  if (mem != null && _isMixCacheValid(mem.generatedAt)) {
+    return mem.tracks;
+  }
+
+  // Check persistent storage across app restarts
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonStr = prefs.getString('$_smartMixStoragePrefix$mixType');
+    if (jsonStr != null && jsonStr.isNotEmpty) {
+      final Map<String, dynamic> data = jsonDecode(jsonStr);
+      final generatedAtMs = data['generatedAt'] as int?;
+      if (generatedAtMs != null) {
+        final generatedAt = DateTime.fromMillisecondsSinceEpoch(generatedAtMs);
+        if (_isMixCacheValid(generatedAt)) {
+          final rawTracks = data['tracks'] as List? ?? [];
+          final tracks = rawTracks
+              .map((t) => JellyfinTrack.fromJson(t as Map<String, dynamic>))
+              .toList();
+          _mixMemoryCache[mixType] = _CachedMix(tracks, generatedAt);
+          return tracks;
+        }
+      }
+    }
+  } catch (e) {
+    print('[smartMix] Error reading persisted cache for $mixType: $e');
+  }
+  return null;
+}
+
+Future<void> _persistMix(String mixType, List<JellyfinTrack> tracks) async {
+  final now = DateTime.now();
+  _mixMemoryCache[mixType] = _CachedMix(tracks, now);
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final payload = {
+      'generatedAt': now.millisecondsSinceEpoch,
+      'tracks': tracks.map((t) => t.toMap()).toList(),
+    };
+    await prefs.setString('$_smartMixStoragePrefix$mixType', jsonEncode(payload));
+  } catch (e) {
+    print('[smartMix] Error writing persisted cache for $mixType: $e');
+  }
+}
+
+Future<void> clearSmartMixCache([String? mixType]) async {
+  if (mixType != null) {
+    _mixMemoryCache.remove(mixType);
+  } else {
+    _mixMemoryCache.clear();
+  }
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    if (mixType != null) {
+      await prefs.remove('$_smartMixStoragePrefix$mixType');
+    } else {
+      final keys = prefs.getKeys().where((k) => k.startsWith(_smartMixStoragePrefix)).toList();
+      for (final k in keys) {
+        await prefs.remove(k);
+      }
+    }
+  } catch (e) {
+    print('[smartMix] Error clearing persisted cache: $e');
+  }
+}
+
+class DailyMixConfigNotifier extends StateNotifier<AsyncValue<DailyMixConfig>> {
+  final PlaylistService _playlistService;
+
+  DailyMixConfigNotifier(this._playlistService) : super(const AsyncLoading()) {
+    loadConfig();
+  }
+
+  Future<void> loadConfig() async {
+    state = const AsyncLoading();
+    try {
+      final config = await _playlistService.getDailyMixConfig();
+      state = AsyncData(config);
+    } catch (e, st) {
+      state = AsyncError(e, st);
+    }
+  }
+
+  Future<void> saveConfig(DailyMixConfig config) async {
+    await _playlistService.saveDailyMixConfig(config);
+    state = AsyncData(config);
+    await clearSmartMixCache('daily_drive');
+  }
+
+  Future<void> resetConfig() async {
+    await _playlistService.resetDailyMixConfig();
+    final defaultConfig = DailyMixConfig.defaultConfig();
+    state = AsyncData(defaultConfig);
+    await clearSmartMixCache('daily_drive');
+  }
+}
+
+final dailyMixConfigProvider =
+    StateNotifierProvider<DailyMixConfigNotifier, AsyncValue<DailyMixConfig>>((ref) {
+  final playlistService = ref.watch(playlistServiceProvider);
+  return DailyMixConfigNotifier(playlistService);
+});
+
+final topGenresProvider = FutureProvider<List<String>>((ref) async {
+  final playlistService = ref.watch(playlistServiceProvider);
+  return playlistService.getTopListenedGenres();
+});
+
+final recentGenresProvider = FutureProvider<List<String>>((ref) async {
+  final playlistService = ref.watch(playlistServiceProvider);
+  return playlistService.getRecentlyListenedGenres();
+});
 
 /// Provider that resolves the tracks for a given smart mix type
 /// ('daily', 'heavy', 'undiscovered', 'daily_drive').
-/// Results are cached per mix type and regenerate at 6 AM local time.
+/// Results are persisted to disk and valid until midnight of each day.
 final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>((ref, mixType) async {
-  // Return cached result if still valid (before next 6 AM boundary).
-  if (_isMixCacheValid(mixType)) {
-    return _mixCache[mixType]!.tracks;
+  // Return persisted/cached result if still valid (before midnight).
+  final cached = await _getPersistedMix(mixType);
+  if (cached != null && cached.isNotEmpty) {
+    return cached;
   }
 
   final tracks = await ref.watch(tracksProvider.future);
@@ -377,21 +493,24 @@ final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String
   List<JellyfinTrack> result;
   if (mixType == 'daily') {
     result = await playlistService.getSmartMix(libraryTracks: tracks);
+  } else if (mixType == 'daily_drive') {
+    final podcastService = ref.read(podcastServiceProvider);
+    final customConfig = ref.watch(dailyMixConfigProvider).valueOrNull;
+    result = await playlistService.getDailyDrive(
+      libraryTracks: tracks,
+      podcastService: podcastService,
+      customConfig: customConfig,
+    );
   } else if (mixType == 'heavy') {
     result = await playlistService.getHeavyRotation(libraryTracks: tracks);
   } else if (mixType == 'undiscovered') {
     result = await playlistService.getUndiscovered(libraryTracks: tracks);
-  } else if (mixType == 'daily_drive') {
-    final podcastService = ref.read(podcastServiceProvider);
-    result = await playlistService.getDailyDrive(
-      libraryTracks: tracks,
-      podcastService: podcastService,
-    );
   } else {
     result = [];
   }
 
-  _mixCache[mixType] = _CachedMix(result, DateTime.now());
+  // Persist result until next midnight
+  await _persistMix(mixType, result);
   return result;
 });
 

@@ -105,8 +105,24 @@ class JellyfinTrack {
       serverId: (json['ServerId'] as String?) ?? '',
       imageTag: imageTag,
       dateCreated: dateCreated,
+      remoteStreamUrl: (json['RemoteStreamUrl'] as String?) ?? (json['remoteStreamUrl'] as String?),
     );
   }
+
+  Map<String, dynamic> toMap() => {
+        'Id': id,
+        'Name': name,
+        'Artists': artists,
+        'AlbumArtist': albumArtist,
+        'AlbumId': albumId,
+        'Album': albumName,
+        'Genres': genres,
+        'RunTimeTicks': durationMs * 10000,
+        'ServerId': serverId,
+        'ImageTags': imageTag != null ? {'Primary': imageTag} : null,
+        'DateCreated': dateCreated?.toIso8601String(),
+        'RemoteStreamUrl': remoteStreamUrl,
+      };
 
   @override
   String toString() =>

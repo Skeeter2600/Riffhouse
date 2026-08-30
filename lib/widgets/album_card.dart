@@ -5,8 +5,6 @@ import 'package:go_router/go_router.dart';
 
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
-import '../providers/library_provider.dart';
-import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
 
 // ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   String? _currentSourceType;
   String? _currentSourceId;
   String? _currentSourceTitle;
+  bool _currentTrackCountedAsListen = false;
 
   List<JellyfinTrack> get currentQueue => _queue;
   int get currentIndex => _currentIndex;
@@ -103,10 +104,10 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     _player.currentIndexStream.listen((index) async {
       if (index != null && index < _queue.length) {
         _currentIndex = index;
+        _currentTrackCountedAsListen = false;
         // Publish immediately with the HTTPS art URL so UI shows something fast
         mediaItem.add(_trackToMediaItem(_queue[index]));
-        // Record the play and pre-fetch the next track asynchronously.
-        _playlistService.recordPlay(_queue[index].jellyfinId);
+        // Pre-fetch the next track asynchronously.
         _prefetchNext(index);
         // Then asynchronously download art to a local file and republish
         // so Android Auto / notification shade can display it without auth headers.
@@ -125,7 +126,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       // Save state immediately on play/pause transition!
       unawaited(_savePlaybackState());
 
-      // Auto-mark podcast as listened on completion
+      // On track completion:
       if (state.processingState == ProcessingState.completed) {
         if (_queue.isNotEmpty && _currentIndex < _queue.length) {
           final currentTrack = _queue[_currentIndex];
@@ -133,14 +134,45 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             final guid = currentTrack.id.substring('podcast_'.length);
             final podcastService = PodcastService();
             unawaited(podcastService.markAsListened(guid, true));
+          } else if (!_currentTrackCountedAsListen) {
+            _currentTrackCountedAsListen = true;
+            unawaited(_playlistService.recordPlay(currentTrack.jellyfinId));
           }
         }
       }
     });
 
-    // Save position periodically as it plays
+    // Save position periodically and count listen if threshold is met
     _player.positionStream.listen((pos) {
       _savePlaybackPosition(pos);
+
+      // Check listen threshold for music tracks:
+      // Counted if listened to by at least half (or 30 seconds, whichever is longer).
+      if (!_currentTrackCountedAsListen &&
+          _queue.isNotEmpty &&
+          _currentIndex < _queue.length) {
+        final currentTrack = _queue[_currentIndex];
+        if (!currentTrack.id.startsWith('podcast_')) {
+          final totalDuration = _player.duration ?? currentTrack.duration;
+          if (totalDuration > Duration.zero) {
+            Duration threshold;
+            if (totalDuration <= const Duration(seconds: 30)) {
+              threshold = Duration(milliseconds: totalDuration.inMilliseconds ~/ 2);
+            } else {
+              final half = Duration(milliseconds: totalDuration.inMilliseconds ~/ 2);
+              threshold = half > const Duration(seconds: 30)
+                  ? half
+                  : const Duration(seconds: 30);
+            }
+
+            if (pos >= threshold) {
+              _currentTrackCountedAsListen = true;
+              print('[JellyfinAudioHandler] Listen threshold met for ${currentTrack.name} (${pos.inSeconds}s >= ${threshold.inSeconds}s). Recording play.');
+              unawaited(_playlistService.recordPlay(currentTrack.jellyfinId));
+            }
+          }
+        }
+      }
     });
   }
 
@@ -160,6 +192,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   }) async {
     _queue = queue ?? [track];
     _currentIndex = queueIndex;
+    _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'track';
     _currentSourceId = fromId ?? track.id;
     _currentSourceTitle = fromTitle ?? track.title;
@@ -188,6 +221,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   }) async {
     _queue = tracks;
     _currentIndex = startIndex;
+    _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'queue';
     _currentSourceId = fromId;
     _currentSourceTitle = fromTitle;
@@ -248,7 +282,12 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final target = currentPos - const Duration(seconds: 15);
       await seek(target > Duration.zero ? target : Duration.zero);
     } else {
-      await _player.seekToPrevious();
+      // If we are more than 5 seconds into the song, rewind to beginning
+      if (_player.position > const Duration(seconds: 5)) {
+        await seek(Duration.zero);
+      } else {
+        await _player.seekToPrevious();
+      }
     }
   }
 

@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../audio/queue_notifier.dart';
-import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
@@ -69,6 +68,14 @@ class SmartMixDetailScreen extends ConsumerWidget {
             expandedHeight: 250,
             pinned: true,
             backgroundColor: AppColors.background,
+            actions: [
+              if (mixType == 'daily_drive')
+                IconButton(
+                  icon: const Icon(Icons.tune_rounded, color: Colors.white),
+                  tooltip: 'Customize Daily Drive',
+                  onPressed: () => context.push('/daily-mix-config'),
+                ),
+            ],
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
                 decoration: BoxDecoration(

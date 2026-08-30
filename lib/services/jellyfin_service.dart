@@ -1,7 +1,5 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:dio/dio.dart';
-import 'package:http_parser/http_parser.dart';
 import '../models/jellyfin_models.dart';
 
 /// Wraps the Jellyfin REST API.
@@ -160,7 +158,7 @@ class JellyfinService {
         );
         startIndex += items.length;
         if (items.isEmpty) break;
-      } while (startIndex < (totalCount ?? 0));
+      } while (startIndex < totalCount);
 
       return allTracks;
     } on DioException catch (e) {
@@ -475,11 +473,23 @@ class JellyfinService {
   /// Returns the newly created playlist's ID on success, or `null`.
   Future<String?> createPlaylist(String name, List<String> trackIds) async {
     try {
+      final queryParams = <String, dynamic>{
+        'Name': name,
+        'name': name,
+        'UserId': userId,
+        'userId': userId,
+      };
+      if (trackIds.isNotEmpty) {
+        queryParams['Ids'] = trackIds.join(',');
+        queryParams['ids'] = trackIds.join(',');
+      }
+
       final response = await _dio.post(
         'Playlists',
-        queryParameters: {
+        queryParameters: queryParams,
+        data: {
           'Name': name,
-          'Ids': trackIds.join(','),
+          'Ids': trackIds,
           'UserId': userId,
         },
         options: Options(headers: _headers),
@@ -487,7 +497,12 @@ class JellyfinService {
 
       if ((response.statusCode == 200 || response.statusCode == 201) &&
           response.data != null) {
-        return response.data['Id'] as String?;
+        final data = response.data;
+        if (data is Map) {
+          return (data['Id'] ?? data['id']) as String?;
+        } else if (data is String && data.isNotEmpty) {
+          return data;
+        }
       }
       return null;
     } on DioException catch (e) {
@@ -503,13 +518,36 @@ class JellyfinService {
         'Playlists/$playlistId/Items',
         queryParameters: {
           'Ids': trackId,
+          'ids': trackId,
           'UserId': userId,
+          'userId': userId,
         },
         options: Options(headers: _headers),
       );
       return response.statusCode == 200 || response.statusCode == 204;
     } on DioException catch (e) {
       print('addTrackToPlaylist failed: ${e.message}');
+      return false;
+    }
+  }
+
+  /// Removes a track from an existing playlist on the server.
+  Future<bool> removeTrackFromPlaylist(String playlistId, String trackId) async {
+    try {
+      final response = await _dio.delete(
+        'Playlists/$playlistId/Items',
+        queryParameters: {
+          'EntryIds': trackId,
+          'entryIds': trackId,
+          'Ids': trackId,
+          'ids': trackId,
+          'UserId': userId,
+        },
+        options: Options(headers: _headers),
+      );
+      return response.statusCode == 200 || response.statusCode == 204;
+    } on DioException catch (e) {
+      print('removeTrackFromPlaylist failed: ${e.message}');
       return false;
     }
   }

@@ -53,6 +53,8 @@ final subscribedFeedsProvider =
   return SubscribedFeedsNotifier(service);
 });
 
+final podcastFeedsProvider = subscribedFeedsProvider;
+
 final podcastEpisodesProvider =
     FutureProvider.family<List<PodcastEpisode>, PodcastFeed>((ref, feed) async {
   final service = ref.watch(podcastServiceProvider);
