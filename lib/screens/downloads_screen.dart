@@ -44,7 +44,7 @@ class DownloadsScreen extends ConsumerWidget {
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: [
-                      AppColors.primary.withOpacity(0.2),
+                      AppColors.primary.withValues(alpha: 0.2),
                       AppColors.card,
                     ],
                     begin: Alignment.topLeft,

@@ -85,7 +85,7 @@ class AppTheme {
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: AppColors.surface,
-        indicatorColor: AppColors.primary.withOpacity(0.2),
+        indicatorColor: AppColors.primary.withValues(alpha: 0.2),
         labelTextStyle: WidgetStateProperty.all(
           GoogleFonts.inter(
               fontSize: 11,
@@ -103,7 +103,7 @@ class AppTheme {
         activeTrackColor: AppColors.primary,
         inactiveTrackColor: AppColors.surfaceVariant,
         thumbColor: AppColors.primary,
-        overlayColor: AppColors.primary.withOpacity(0.1),
+        overlayColor: AppColors.primary.withValues(alpha: 0.1),
         trackHeight: 3.0,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
       ),

@@ -127,6 +127,7 @@ class _DailyMixConfigScreenState extends ConsumerState<DailyMixConfigScreen> {
                           buildDefaultDragHandles: false,
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
                           itemCount: _workingConfig!.slots.length,
+                          // ignore: deprecated_member_use
                           onReorder: (oldIndex, newIndex) {
                             setState(() {
                               if (newIndex > oldIndex) newIndex--;
@@ -169,7 +170,7 @@ class _DailyMixConfigScreenState extends ConsumerState<DailyMixConfigScreen> {
       ),
       bottomNavigationBar: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           color: AppColors.card,
           border: Border(top: BorderSide(color: AppColors.glassBorder, width: 0.5)),
         ),

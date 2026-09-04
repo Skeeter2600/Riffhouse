@@ -17,6 +17,26 @@ class PodcastFeed {
     required this.category,
   });
 
+  PodcastFeed copyWith({
+    String? id,
+    String? title,
+    String? publisher,
+    String? rssUrl,
+    String? imageUrl,
+    String? description,
+    String? category,
+  }) {
+    return PodcastFeed(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      publisher: publisher ?? this.publisher,
+      rssUrl: rssUrl ?? this.rssUrl,
+      imageUrl: imageUrl ?? this.imageUrl,
+      description: description ?? this.description,
+      category: category ?? this.category,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'title': title,

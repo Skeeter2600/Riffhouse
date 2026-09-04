@@ -9,7 +9,6 @@ import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/track_card.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 
 class AlbumDetailScreen extends ConsumerWidget {
@@ -39,7 +38,15 @@ class AlbumDetailScreen extends ConsumerWidget {
 
         return Scaffold(
           backgroundColor: AppColors.background,
-          body: CustomScrollView(
+          body: RefreshIndicator(
+            color: AppColors.primary,
+            backgroundColor: AppColors.card,
+            onRefresh: () async {
+              ref.invalidate(albumsProvider);
+              ref.invalidate(albumTracksProvider(albumId));
+              await ref.read(albumTracksProvider(albumId).future);
+            },
+            child: CustomScrollView(
             slivers: [
               // Parallax app bar
               SliverAppBar(
@@ -222,7 +229,8 @@ class AlbumDetailScreen extends ConsumerWidget {
               const SliverToBoxAdapter(child: SizedBox(height: 80)),
             ],
           ),
-        );
+        ),
+      );
       },
     );
   }
@@ -296,8 +304,13 @@ class _TrackRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return InkWell(
       onTap: () {
-        ref.read(recentSelectionsProvider.notifier).addSelection(track.albumId.isNotEmpty ? track.albumId : track.albumName, 'album');
-        ref.read(queueNotifierProvider.notifier).playQueue(queue, queueIndex);
+        ref.read(queueNotifierProvider.notifier).playQueue(
+          queue,
+          queueIndex,
+          fromType: 'album',
+          fromId: track.albumId,
+          fromTitle: track.albumName,
+        );
         context.push('/player');
       },
       onLongPress: () => _showContextMenu(context, ref),

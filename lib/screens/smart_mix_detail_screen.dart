@@ -14,6 +14,10 @@ class SmartMixDetailScreen extends ConsumerWidget {
   const SmartMixDetailScreen({super.key, required this.mixType});
 
   String _getTitle() {
+    if (mixType.startsWith('genre_')) {
+      final genre = Uri.decodeComponent(mixType.substring('genre_'.length));
+      return '$genre Mix';
+    }
     if (mixType == 'daily') return 'Daily Mix';
     if (mixType == 'heavy') return 'Heavy Rotation';
     if (mixType == 'undiscovered') return 'Undiscovered';
@@ -22,6 +26,10 @@ class SmartMixDetailScreen extends ConsumerWidget {
   }
 
   String _getSubtitle() {
+    if (mixType.startsWith('genre_')) {
+      final genre = Uri.decodeComponent(mixType.substring('genre_'.length));
+      return 'Daily mix of your favorite $genre tracks';
+    }
     if (mixType == 'daily') return 'Curated weekly playlist based on your activity';
     if (mixType == 'heavy') return 'Your most played tracks on repeat';
     if (mixType == 'undiscovered') return 'Tracks from your library you haven\'t heard yet';
@@ -30,6 +38,20 @@ class SmartMixDetailScreen extends ConsumerWidget {
   }
 
   List<Color> _getColors() {
+    if (mixType.startsWith('genre_')) {
+      final genre = Uri.decodeComponent(mixType.substring('genre_'.length));
+      final palettes = [
+        [const Color(0xFF3B82F6), const Color(0xFF1D4ED8)],
+        [const Color(0xFF10B981), const Color(0xFF047857)],
+        [const Color(0xFFF97316), const Color(0xFFC2410C)],
+        [const Color(0xFF8B5CF6), const Color(0xFF6D28D9)],
+        [const Color(0xFFEC4899), const Color(0xFFBE185D)],
+        [const Color(0xFF14B8A6), const Color(0xFF0F766E)],
+        [const Color(0xFFEAB308), const Color(0xFFA16207)],
+        [const Color(0xFF6366F1), const Color(0xFF4338CA)],
+      ];
+      return palettes[genre.hashCode.abs() % palettes.length];
+    }
     if (mixType == 'daily') return [const Color(0xFF7C3AED), const Color(0xFF4F46E5)];
     if (mixType == 'heavy') return [const Color(0xFFEC4899), const Color(0xFFBE185D)];
     if (mixType == 'undiscovered') return [const Color(0xFF06B6D4), const Color(0xFF0369A1)];
@@ -38,6 +60,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
   }
 
   IconData _getIcon() {
+    if (mixType.startsWith('genre_')) return Icons.music_note_rounded;
     if (mixType == 'daily') return Icons.auto_awesome;
     if (mixType == 'heavy') return Icons.replay_rounded;
     if (mixType == 'undiscovered') return Icons.explore_rounded;
@@ -89,7 +112,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
                   child: Icon(
                     icon,
                     size: 80,
-                    color: Colors.white.withOpacity(0.85),
+                    color: Colors.white.withValues(alpha: 0.85),
                   ),
                 ),
               ),

@@ -10,9 +10,6 @@ import 'services/cache_service.dart';
 import 'services/database_service.dart';
 import 'services/jellyfin_service.dart';
 import 'services/playlist_service.dart';
-import 'providers/auth_provider.dart';
-import 'providers/library_provider.dart';
-import 'models/jellyfin_models.dart';
 import 'theme/app_theme.dart';
 
 late final JellyfinAudioHandler globalAudioHandler;

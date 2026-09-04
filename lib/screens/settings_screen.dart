@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
-import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -21,7 +20,7 @@ class SettingsScreen extends ConsumerWidget {
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
           // ---- Server ----
-          _SectionHeader(title: 'Server'),
+          const _SectionHeader(title: 'Server'),
           _SettingsTile(
             icon: Icons.dns_rounded,
             title: 'Server URL',
@@ -42,7 +41,7 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 8),
 
           // ---- Playback ----
-          _SectionHeader(title: 'Playback'),
+          const _SectionHeader(title: 'Playback'),
           _ToggleTile(
             icon: Icons.music_note_rounded,
             title: 'Gapless Playback',
@@ -61,7 +60,7 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 8),
 
           // ---- Cache ----
-          _SectionHeader(title: 'Cache'),
+          const _SectionHeader(title: 'Cache'),
           _SettingsTile(
             icon: Icons.storage_rounded,
             title: 'Downloads',
@@ -78,8 +77,8 @@ class SettingsScreen extends ConsumerWidget {
           const SizedBox(height: 8),
 
           // ---- About ----
-          _SectionHeader(title: 'About'),
-          _SettingsTile(
+          const _SectionHeader(title: 'About'),
+          const _SettingsTile(
             icon: Icons.info_outline_rounded,
             title: 'Version',
             subtitle: '1.0.0 (build 1)',
@@ -292,7 +291,7 @@ class _ToggleTileState extends State<_ToggleTile> {
           setState(() => _value = v);
           widget.onChanged(v);
         },
-        activeColor: AppColors.primary,
+        activeThumbColor: AppColors.primary,
       ),
     );
   }
@@ -320,7 +319,7 @@ class _DangerTile extends StatelessWidget {
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: Colors.red.withOpacity(0.12),
+          color: Colors.red.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(10),
         ),
         child: Icon(icon, color: Colors.redAccent, size: 20),

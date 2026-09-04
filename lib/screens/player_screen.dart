@@ -157,7 +157,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.primary.withOpacity(0.3),
+                            color: AppColors.primary.withValues(alpha: 0.3),
                             blurRadius: 40,
                             spreadRadius: 4,
                             offset: const Offset(0, 12),
@@ -309,7 +309,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                           inactiveTrackColor: AppColors.surfaceVariant,
                           thumbColor: Colors.white,
                           overlayColor:
-                              AppColors.primary.withOpacity(0.15),
+                              AppColors.primary.withValues(alpha: 0.15),
                         ),
                         child: Slider(
                           value: progress.toDouble(),
@@ -490,6 +490,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
               child: ReorderableListView.builder(
                 scrollController: scrollCtrl,
                 itemCount: queueState.tracks.length,
+                // ignore: deprecated_member_use
                 onReorder: (_, __) {},
                 itemBuilder: (_, i) {
                   final t = queueState.tracks[i];
@@ -589,7 +590,7 @@ class _PlayPauseButton extends StatelessWidget {
           ),
           boxShadow: [
             BoxShadow(
-              color: AppColors.primary.withOpacity(0.5),
+              color: AppColors.primary.withValues(alpha: 0.5),
               blurRadius: 24,
               spreadRadius: 2,
             ),

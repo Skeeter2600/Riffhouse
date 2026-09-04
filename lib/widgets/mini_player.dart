@@ -29,7 +29,7 @@ class MiniPlayer extends ConsumerWidget {
     return GestureDetector(
       onTap: () => context.push('/player'),
       child: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           color: AppColors.card,
           border: Border(
             top: BorderSide(color: AppColors.glassBorder, width: 0.5),

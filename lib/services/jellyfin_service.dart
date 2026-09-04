@@ -79,8 +79,6 @@ class JellyfinService {
       baseUrl = '$baseUrl/';
     }
 
-    print('Attempting Jellyfin authentication at: ${baseUrl}Users/AuthenticateByName');
-
     final dio = Dio(
       BaseOptions(
         baseUrl: baseUrl,
@@ -107,20 +105,12 @@ class JellyfinService {
 
       if (response.statusCode == 200 && response.data != null) {
         final rawData = response.data as Map<String, dynamic>;
-        print('Jellyfin auth success for user: ${rawData['User']?['Name']}');
         return JellyfinUser.fromJson(rawData);
       }
-      print('Jellyfin auth failed with status code: ${response.statusCode}');
       return null;
-    } on DioException catch (e) {
-      print('Jellyfin auth failed: ${e.message}');
-      if (e.response != null) {
-        print('Jellyfin auth error response status: ${e.response?.statusCode}');
-        print('Jellyfin auth error response body: ${e.response?.data}');
-      }
+    } on DioException catch (_) {
       return null;
-    } catch (e) {
-      print('Unexpected Jellyfin auth error: $e');
+    } catch (_) {
       return null;
     }
   }
@@ -161,8 +151,7 @@ class JellyfinService {
       } while (startIndex < totalCount);
 
       return allTracks;
-    } on DioException catch (e) {
-      print('getTracks failed: ${e.message}');
+    } on DioException catch (_) {
       return allTracks; // return whatever we got before the error
     }
   }
@@ -197,8 +186,7 @@ class JellyfinService {
 
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('getTracksPaged failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -225,8 +213,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('searchTracks failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -249,8 +236,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('searchAlbums failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -272,8 +258,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinArtist.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('searchArtists failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -289,7 +274,7 @@ class JellyfinService {
         'Users/$userId/Items',
         queryParameters: {
           'IncludeItemTypes': 'MusicAlbum',
-          'Fields': 'ChildCount',
+          'Fields': 'ChildCount,DateCreated,Genres',
           'Recursive': true,
         },
         options: Options(headers: _headers),
@@ -299,8 +284,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getAlbums failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -325,8 +309,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinArtist.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getArtists failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -352,8 +335,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinPlaylist.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getPlaylists failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -374,8 +356,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getPlaylistTracks failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -390,8 +371,7 @@ class JellyfinService {
       if (response.data != null) {
         return JellyfinTrack.fromJson(response.data as Map<String, dynamic>);
       }
-    } on DioException catch (e) {
-      print('getTrack failed: ${e.message}');
+    } on DioException catch (_) {
     }
     return null;
   }
@@ -414,8 +394,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getAlbumTracks failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -437,8 +416,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getArtistAlbums failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -462,8 +440,7 @@ class JellyfinService {
       return items
           .map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>))
           .toList();
-    } on DioException catch (e) {
-      print('getArtistTracks failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -505,8 +482,7 @@ class JellyfinService {
         }
       }
       return null;
-    } on DioException catch (e) {
-      print('createPlaylist failed: ${e.message}');
+    } on DioException catch (_) {
       return null;
     }
   }
@@ -525,8 +501,7 @@ class JellyfinService {
         options: Options(headers: _headers),
       );
       return response.statusCode == 200 || response.statusCode == 204;
-    } on DioException catch (e) {
-      print('addTrackToPlaylist failed: ${e.message}');
+    } on DioException catch (_) {
       return false;
     }
   }
@@ -546,8 +521,7 @@ class JellyfinService {
         options: Options(headers: _headers),
       );
       return response.statusCode == 200 || response.statusCode == 204;
-    } on DioException catch (e) {
-      print('removeTrackFromPlaylist failed: ${e.message}');
+    } on DioException catch (_) {
       return false;
     }
   }
@@ -567,8 +541,7 @@ class JellyfinService {
         ),
       );
       return response.statusCode == 200 || response.statusCode == 204;
-    } on DioException catch (e) {
-      print('uploadItemImage failed: ${e.message}');
+    } on DioException catch (_) {
       return false;
     }
   }
@@ -581,8 +554,7 @@ class JellyfinService {
         options: Options(headers: _headers),
       );
       return response.statusCode == 200 || response.statusCode == 204;
-    } on DioException catch (e) {
-      print('deletePlaylist failed: ${e.message}');
+    } on DioException catch (_) {
       return false;
     }
   }
@@ -637,8 +609,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('getRecentAlbums failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -659,8 +630,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinArtist.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('getRecentArtists failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -683,8 +653,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinPlaylist.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('getRecentPlaylists failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -699,7 +668,7 @@ class JellyfinService {
           'SortBy': 'DateCreated',
           'SortOrder': 'Descending',
           'Filters': 'IsUnplayed',
-          'Fields': 'ChildCount',
+          'Fields': 'ChildCount,DateCreated,Genres',
           'Recursive': true,
           'Limit': limit,
         },
@@ -707,8 +676,7 @@ class JellyfinService {
       );
       final items = (response.data?['Items'] as List?) ?? [];
       return items.map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>)).toList();
-    } on DioException catch (e) {
-      print('getNewAlbums failed: ${e.message}');
+    } on DioException catch (_) {
       return [];
     }
   }
@@ -745,8 +713,7 @@ class JellyfinService {
           .map((i) => JellyfinAlbum.fromJson(i as Map<String, dynamic>))
           .toList();
       return {'tracks': tracks, 'albums': albums};
-    } on DioException catch (e) {
-      print('search failed: ${e.message}');
+    } on DioException catch (_) {
       return {'tracks': <JellyfinTrack>[], 'albums': <JellyfinAlbum>[]};
     }
   }

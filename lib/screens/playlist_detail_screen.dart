@@ -46,172 +46,196 @@ class PlaylistDetailScreen extends ConsumerWidget {
             icon: const Icon(Icons.add_rounded, color: Colors.white),
             label: const Text('Add Songs', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
           ),
-          body: CustomScrollView(
-            slivers: [
-              SliverAppBar(
-                expandedHeight: 280,
-                pinned: true,
-                backgroundColor: AppColors.background,
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.edit_outlined,
-                        color: AppColors.textPrimary),
-                    onPressed: () => _showEditBottomSheet(context, ref, playlist),
-                    tooltip: 'Edit Playlist',
-                  ),
-                ],
-                flexibleSpace: FlexibleSpaceBar(
-                  background: imageUrl != null
-                      ? CachedNetworkImage(
-                          imageUrl: imageUrl,
-                          fit: BoxFit.cover,
-                          errorWidget: (_, __, ___) =>
-                              Container(color: AppColors.card),
-                        )
-                      : Container(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                AppColors.primary.withOpacity(0.6),
-                                AppColors.background,
-                              ],
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                            ),
-                          ),
-                          child: const Icon(Icons.queue_music_rounded,
-                              size: 80, color: AppColors.primary),
-                        ),
-                  stretchModes: const [StretchMode.zoomBackground],
-                ),
-              ),
-
-              // Info
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(playlist.name,
-                          style: Theme.of(context).textTheme.headlineMedium),
-                      const SizedBox(height: 4),
-                      Text(
-                        '${playlist.trackCount} tracks',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: tracksAsync.when(
-                              loading: () => const SizedBox(),
-                              error: (_, __) => const SizedBox(),
-                              data: (tracks) => Row(
-                                children: [
-                                  Expanded(
-                                    child: _btn(
-                                      icon: Icons.play_arrow_rounded,
-                                      label: 'Play All',
-                                      primary: true,
-                                      onTap: () {
-                                        ref
-                                            .read(recentSelectionsProvider.notifier)
-                                            .addSelection(playlistId, 'playlist');
-                                        ref
-                                            .read(queueNotifierProvider.notifier)
-                                            .playQueue(
-                                              tracks,
-                                              0,
-                                              fromType: 'playlist',
-                                              fromId: playlistId,
-                                              fromTitle: playlist.name,
-                                            );
-                                        ref
-                                            .read(queueNotifierProvider.notifier)
-                                            .setShuffleMode(AudioServiceShuffleMode.none);
-                                        context.push('/player');
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _btn(
-                                      icon: Icons.shuffle_rounded,
-                                      label: 'Shuffle',
-                                      primary: false,
-                                      onTap: () {
-                                        ref
-                                            .read(recentSelectionsProvider.notifier)
-                                            .addSelection(playlistId, 'playlist');
-                                        final s = [...tracks]..shuffle();
-                                        ref
-                                            .read(queueNotifierProvider.notifier)
-                                            .playQueue(
-                                              s,
-                                              0,
-                                              fromType: 'playlist',
-                                              fromId: playlistId,
-                                              fromTitle: playlist.name,
-                                            );
-                                        ref
-                                            .read(queueNotifierProvider.notifier)
-                                            .setShuffleMode(AudioServiceShuffleMode.all);
-                                        context.push('/player');
-                                      },
-                                    ),
-                                  ),
+          body: RefreshIndicator(
+            color: AppColors.primary,
+            backgroundColor: AppColors.card,
+            onRefresh: () async {
+              ref.invalidate(playlistsProvider);
+              ref.invalidate(playlistTracksProvider(playlistId));
+              await ref.read(playlistTracksProvider(playlistId).future);
+            },
+            child: CustomScrollView(
+              slivers: [
+                SliverAppBar(
+                  expandedHeight: 280,
+                  pinned: true,
+                  backgroundColor: AppColors.background,
+                  actions: [
+                    IconButton(
+                      icon: const Icon(Icons.edit_outlined,
+                          color: AppColors.textPrimary),
+                      onPressed: () => _showEditBottomSheet(context, ref, playlist),
+                      tooltip: 'Edit Playlist',
+                    ),
+                  ],
+                  flexibleSpace: FlexibleSpaceBar(
+                    background: imageUrl != null
+                        ? CachedNetworkImage(
+                            imageUrl: imageUrl,
+                            fit: BoxFit.cover,
+                            errorWidget: (_, __, ___) =>
+                                Container(color: AppColors.card),
+                          )
+                        : Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  AppColors.primary.withValues(alpha: 0.6),
+                                  AppColors.background,
                                 ],
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
                               ),
                             ),
+                            child: const Icon(Icons.queue_music_rounded,
+                                size: 80, color: AppColors.primary),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      OutlinedButton.icon(
-                        onPressed: () {},
-                        icon: const Icon(Icons.cloud_upload_outlined,
-                            color: AppColors.secondary),
-                        label: const Text('Sync to Server',
-                            style: TextStyle(color: AppColors.secondary)),
-                        style: OutlinedButton.styleFrom(
-                          minimumSize: const Size.fromHeight(44),
-                          side: const BorderSide(
-                              color: AppColors.secondary, width: 0.8),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12)),
+                    stretchModes: const [StretchMode.zoomBackground],
+                  ),
+                ),
+
+                // Info
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(playlist.name,
+                            style: Theme.of(context).textTheme.headlineMedium),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${playlist.trackCount} tracks',
+                          style: Theme.of(context).textTheme.bodyMedium,
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: tracksAsync.when(
+                                loading: () => const SizedBox(),
+                                error: (_, __) => const SizedBox(),
+                                data: (tracks) => Row(
+                                  children: [
+                                    Expanded(
+                                      child: _btn(
+                                        icon: Icons.play_arrow_rounded,
+                                        label: 'Play All',
+                                        primary: true,
+                                        onTap: () {
+                                          ref
+                                              .read(recentSelectionsProvider.notifier)
+                                              .addSelection(playlistId, 'playlist');
+                                          ref
+                                              .read(queueNotifierProvider.notifier)
+                                              .playQueue(
+                                                tracks,
+                                                0,
+                                                fromType: 'playlist',
+                                                fromId: playlistId,
+                                                fromTitle: playlist.name,
+                                              );
+                                          ref
+                                              .read(queueNotifierProvider.notifier)
+                                              .setShuffleMode(AudioServiceShuffleMode.none);
+                                          context.push('/player');
+                                        },
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: _btn(
+                                        icon: Icons.shuffle_rounded,
+                                        label: 'Shuffle',
+                                        primary: false,
+                                        onTap: () {
+                                          ref
+                                              .read(recentSelectionsProvider.notifier)
+                                              .addSelection(playlistId, 'playlist');
+                                          final s = [...tracks]..shuffle();
+                                          ref
+                                              .read(queueNotifierProvider.notifier)
+                                              .playQueue(
+                                                s,
+                                                0,
+                                                fromType: 'playlist',
+                                                fromId: playlistId,
+                                                fromTitle: playlist.name,
+                                              );
+                                          ref
+                                              .read(queueNotifierProvider.notifier)
+                                              .setShuffleMode(AudioServiceShuffleMode.all);
+                                          context.push('/player');
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            ref.invalidate(playlistsProvider);
+                            ref.invalidate(playlistTracksProvider(playlistId));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Syncing playlist with server...'),
+                                duration: Duration(seconds: 1),
+                                backgroundColor: AppColors.primary,
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.sync_rounded,
+                              color: AppColors.secondary),
+                          label: const Text('Sync to Server',
+                              style: TextStyle(color: AppColors.secondary)),
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size.fromHeight(44),
+                            side: const BorderSide(
+                                color: AppColors.secondary, width: 0.8),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
 
-              // Tracks
-              tracksAsync.when(
-                loading: () => const SliverToBoxAdapter(
-                  child: Center(
-                      child: Padding(
-                    padding: EdgeInsets.all(32),
-                    child: CircularProgressIndicator(color: AppColors.primary),
-                  )),
-                ),
-                error: (e, _) => SliverToBoxAdapter(
-                    child: Center(child: Text('$e'))),
-                data: (tracks) => SliverList(
-                  delegate: SliverChildBuilderDelegate(
-                    (ctx, i) {
-                      final t = tracks[i];
-                      return _TrackItem(
-                          track: t, queue: tracks, index: i, playlistId: playlistId);
-                    },
-                    childCount: tracks.length,
+                // Tracks
+                tracksAsync.when(
+                  loading: () => const SliverToBoxAdapter(
+                    child: Center(
+                        child: Padding(
+                      padding: EdgeInsets.all(32),
+                      child: CircularProgressIndicator(color: AppColors.primary),
+                    )),
+                  ),
+                  error: (e, _) => SliverToBoxAdapter(
+                      child: Center(child: Text('$e'))),
+                  data: (tracks) => SliverList(
+                    delegate: SliverChildBuilderDelegate(
+                      (ctx, i) {
+                        final t = tracks[i];
+                        return _TrackItem(
+                          track: t,
+                          queue: tracks,
+                          index: i,
+                          playlistId: playlistId,
+                          playlistName: playlist.name,
+                        );
+                      },
+                      childCount: tracks.length,
+                    ),
                   ),
                 ),
-              ),
 
-              const SliverToBoxAdapter(child: SizedBox(height: 120)),
-            ],
+                const SliverToBoxAdapter(child: SizedBox(height: 120)),
+              ],
+            ),
           ),
         );
       },
@@ -251,12 +275,14 @@ class PlaylistDetailScreen extends ConsumerWidget {
                   final mimeType = image.mimeType ?? 'image/jpeg';
                   final playlistService = ref.read(playlistServiceProvider);
                   
+                  if (!context.mounted) return;
                   // Show loading SnackBar
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Uploading cover art...'), duration: Duration(seconds: 2)),
                   );
                   
                   final success = await playlistService.uploadPlaylistImage(playlist.id, bytes, mimeType);
+                  if (!context.mounted) return;
                   if (success) {
                     ref.invalidate(playlistsProvider);
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -300,6 +326,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                 if (confirm == true) {
                   final playlistService = ref.read(playlistServiceProvider);
                   final success = await playlistService.deletePlaylist(playlist.id);
+                  if (!context.mounted) return;
                   if (success) {
                     ref.invalidate(playlistsProvider);
                     context.pop(); // Pop playlist detail page
@@ -367,11 +394,16 @@ class _TrackItem extends ConsumerWidget {
   final JellyfinTrack track;
   final List<JellyfinTrack> queue;
   final int index;
-
   final String playlistId;
+  final String playlistName;
 
-  const _TrackItem(
-      {required this.track, required this.queue, required this.index, required this.playlistId});
+  const _TrackItem({
+    required this.track,
+    required this.queue,
+    required this.index,
+    required this.playlistId,
+    required this.playlistName,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -413,7 +445,13 @@ class _TrackItem extends ConsumerWidget {
       ),
       onTap: () {
         ref.read(recentSelectionsProvider.notifier).addSelection(playlistId, 'playlist');
-        ref.read(queueNotifierProvider.notifier).playQueue(queue, index);
+        ref.read(queueNotifierProvider.notifier).playQueue(
+              queue,
+              index,
+              fromType: 'playlist',
+              fromId: playlistId,
+              fromTitle: playlistName,
+            );
         context.push('/player');
       },
       onLongPress: () => _showContextMenu(context, ref),
@@ -489,6 +527,7 @@ class _TrackItem extends ConsumerWidget {
                 Navigator.pop(ctx);
                 final playlistService = ref.read(playlistServiceProvider);
                 final success = await playlistService.removeTrackFromPlaylist(playlistId, track.id);
+                if (!context.mounted) return;
                 if (success) {
                   ref.invalidate(playlistTracksProvider(playlistId));
                   ref.invalidate(playlistsProvider);

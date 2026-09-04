@@ -101,43 +101,103 @@ class PlaylistsScreen extends ConsumerWidget {
 
   void _showCreateDialog(BuildContext context, WidgetRef ref) {
     final controller = TextEditingController();
+    String? selectedGenre;
+    final genres = ref.read(homeGenreMixesProvider).valueOrNull ?? [];
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('New Playlist',
-            style: TextStyle(color: AppColors.textPrimary)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: AppColors.textPrimary),
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'Playlist name',
-            hintStyle: TextStyle(color: AppColors.textMuted),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          backgroundColor: AppColors.card,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('New Playlist',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: controller,
+                  style: const TextStyle(color: AppColors.textPrimary),
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'Playlist name',
+                    hintStyle: TextStyle(color: AppColors.textMuted),
+                  ),
+                ),
+                if (genres.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Generate from genre (optional):',
+                    style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: genres.map((genre) {
+                      final isSelected = selectedGenre == genre;
+                      return ChoiceChip(
+                        label: Text(genre),
+                        selected: isSelected,
+                        selectedColor: AppColors.primary,
+                        backgroundColor: AppColors.surfaceVariant,
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : AppColors.textPrimary,
+                          fontSize: 12,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                        onSelected: (selected) {
+                          setState(() {
+                            if (selected) {
+                              selectedGenre = genre;
+                              if (controller.text.isEmpty || controller.text.endsWith(' Mix')) {
+                                controller.text = '$genre Mix';
+                              }
+                            } else {
+                              selectedGenre = null;
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                ],
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel',
-                style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final name = controller.text.trim();
-              if (name.isNotEmpty) {
-                Navigator.pop(ctx);
-                final playlistService = ref.read(playlistServiceProvider);
-                final newId = await playlistService.createPlaylistOnServer(name, []);
-                if (newId != null) {
-                  ref.invalidate(playlistsProvider);
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final name = controller.text.trim();
+                if (name.isNotEmpty) {
+                  Navigator.pop(ctx);
+                  final playlistService = ref.read(playlistServiceProvider);
+                  List<String> trackIds = [];
+                  if (selectedGenre != null) {
+                    final tracks = await ref.read(tracksProvider.future);
+                    final mixTracks = await playlistService.getSmartMix(
+                      genreFilter: [selectedGenre!],
+                      libraryTracks: tracks,
+                    );
+                    trackIds = mixTracks.map((t) => t.id).toList();
+                  }
+                  final newId = await playlistService.createPlaylistOnServer(name, trackIds);
+                  if (newId != null) {
+                    ref.invalidate(playlistsProvider);
+                  }
                 }
-              }
-            },
-            child: const Text('Create'),
-          ),
-        ],
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -218,7 +278,7 @@ class _PlaylistCard extends ConsumerWidget {
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [AppColors.primary.withOpacity(0.4), AppColors.card],
+          colors: [AppColors.primary.withValues(alpha: 0.4), AppColors.card],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),

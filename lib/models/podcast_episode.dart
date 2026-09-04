@@ -30,10 +30,10 @@ class PodcastEpisode {
     return JellyfinTrack(
       id: 'podcast_$guid',
       name: title,
-      artists: [podcastPublisher],
-      albumArtist: podcastPublisher,
+      artists: [podcastTitle],
+      albumArtist: podcastTitle,
       albumId: 'podcast_$podcastFeedId',
-      albumName: podcastTitle,
+      albumName: podcastPublisher,
       genres: const ['News', 'Podcast'],
       durationMs: duration.inMilliseconds,
       serverId: '',

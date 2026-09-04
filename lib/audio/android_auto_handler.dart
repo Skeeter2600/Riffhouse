@@ -53,17 +53,6 @@ const Map<String, dynamic> _kGridExtras = {
 /// Extra used by Android Auto to display a MediaItem as a non-clickable section header.
 const String kAndroidMediaBrowseHeader = 'android.media.browse.extra.HEADER';
 
-const Map<String, dynamic> _kHeaderExtras = {
-  kAndroidMediaBrowseHeader: true,
-};
-
-// Extras map for nodes whose children are tracks (list only)
-const Map<String, dynamic> _kListExtras = {
-  kContentStyleSupported: true,
-  kContentStyleBrowsableHint: kContentStyleList,
-  kContentStylePlayableHint: kContentStyleList,
-};
-
 // ---------------------------------------------------------------------------
 // AndroidAutoHandler
 // ---------------------------------------------------------------------------
@@ -77,7 +66,6 @@ class AndroidAutoHandler {
   List<JellyfinPlaylist> _playlists = [];
   List<JellyfinAlbum> _albums = [];
   List<JellyfinArtist> _artists = [];
-  List<JellyfinTrack> _recentTracks = [];
   List<RecentlyPlayedItem> _recentlyPlayed = [];
   List<JellyfinAlbum> _newAlbums = [];
 
@@ -155,7 +143,6 @@ class AndroidAutoHandler {
     _albums = albums;
     _artists = artists;
     _tracksByContainer = tracksByContainer;
-    _recentTracks = recentTracks;
     _recentlyPlayed = recentlyPlayed;
     _newAlbums = newAlbums;
   }

@@ -61,6 +61,8 @@ dependencies:
   google_fonts: ^6.2.1
   image_picker: ^1.2.3
 
+  audio_session: any
+  flutter_cache_manager: any
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart';
@@ -6,7 +7,6 @@ import 'package:drift/drift.dart';
 import '../database/app_database.dart';
 import '../models/daily_mix_config.dart';
 import '../models/jellyfin_models.dart';
-import '../services/cache_service.dart';
 import '../services/jellyfin_service.dart';
 import '../services/playlist_service.dart';
 import 'auth_provider.dart';
@@ -76,7 +76,6 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
     if (cachedTracks.isEmpty) {
       // Database is empty! This is the first sync.
       // We should perform a sync and return the results directly so the provider is in a loading state.
-      print('[TracksNotifier] Local database is empty. Performing initial library sync...');
       return _syncInitial(db, service);
     } else {
       // Schedule background sync
@@ -90,10 +89,8 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       final remoteTracks = await service.getTracks();
       final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
       await db.bulkInsertLocalTracks(companions);
-      print('[TracksNotifier] Initial library sync complete. Saved ${remoteTracks.length} tracks.');
       return remoteTracks;
-    } catch (e, stack) {
-      print('[TracksNotifier] Error in initial library sync: $e\n$stack');
+    } catch (_) {
       return [];
     }
   }
@@ -129,18 +126,15 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       }
 
       if (newTracks.isNotEmpty) {
-        print('[TracksNotifier] Found ${newTracks.length} new tracks in background sync. Saving to database...');
         final companions = newTracks.map(jellyfinTrackToCompanion).toList();
         await db.bulkInsertLocalTracks(companions);
 
         // Reload all tracks and update state
         final updatedLocal = await db.getAllLocalTracks();
         state = AsyncData(updatedLocal.map(localTrackToJellyfin).toList());
-      } else {
-        print('[TracksNotifier] Background sync complete: no new tracks found.');
       }
-    } catch (e, stack) {
-      print('[TracksNotifier] Error in background sync: $e\n$stack');
+    } catch (_) {
+      // Ignore background sync errors
     }
   }
 
@@ -151,7 +145,6 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       final db = ref.read(databaseProvider);
       if (service == null) return [];
 
-      print('[TracksNotifier] Starting full library sync...');
       final remoteTracks = await service.getTracks();
 
       // Perform database reconciliation
@@ -169,7 +162,6 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
       await db.bulkInsertLocalTracks(companions);
 
-      print('[TracksNotifier] Full library sync complete. Synced ${remoteTracks.length} tracks.');
       return remoteTracks;
     });
   }
@@ -264,12 +256,9 @@ final playlistsProvider =
 final albumTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>(
     (ref, albumId) async {
   final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  
-  print('albumTracksProvider: Fetching tracks directly from server for albumId="$albumId"');
+  if (service == null) return const [];
   final tracks = await service.getAlbumTracks(albumId);
-  print('albumTracksProvider: Fetched ${tracks.length} tracks.');
-  return tracks;
+  return List<JellyfinTrack>.unmodifiable(tracks);
 });
 
 // ---------------------------------------------------------------------------
@@ -279,15 +268,16 @@ final albumTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>(
 final artistAlbumsProvider =
     FutureProvider.family<List<JellyfinAlbum>, String>((ref, artistId) async {
   final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
+  if (service == null) return const [];
   return service.getArtistAlbums(artistId);
 });
 
 final artistTracksProvider =
     FutureProvider.family<List<JellyfinTrack>, String>((ref, artistId) async {
   final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getArtistTracks(artistId);
+  if (service == null) return const [];
+  final tracks = await service.getArtistTracks(artistId);
+  return List<JellyfinTrack>.unmodifiable(tracks);
 });
 
 // ---------------------------------------------------------------------------
@@ -298,8 +288,9 @@ final playlistTracksProvider =
     FutureProvider.family<List<JellyfinTrack>, String>(
         (ref, playlistId) async {
   final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getPlaylistTracks(playlistId);
+  if (service == null) return const [];
+  final tracks = await service.getPlaylistTracks(playlistId);
+  return List<JellyfinTrack>.unmodifiable(tracks);
 });
 
 // ---------------------------------------------------------------------------
@@ -388,8 +379,8 @@ Future<List<JellyfinTrack>?> _getPersistedMix(String mixType) async {
         }
       }
     }
-  } catch (e) {
-    print('[smartMix] Error reading persisted cache for $mixType: $e');
+  } catch (_) {
+    // Ignore cache read error
   }
   return null;
 }
@@ -404,8 +395,8 @@ Future<void> _persistMix(String mixType, List<JellyfinTrack> tracks) async {
       'tracks': tracks.map((t) => t.toMap()).toList(),
     };
     await prefs.setString('$_smartMixStoragePrefix$mixType', jsonEncode(payload));
-  } catch (e) {
-    print('[smartMix] Error writing persisted cache for $mixType: $e');
+  } catch (_) {
+    // Ignore cache write error
   }
 }
 
@@ -425,8 +416,8 @@ Future<void> clearSmartMixCache([String? mixType]) async {
         await prefs.remove(k);
       }
     }
-  } catch (e) {
-    print('[smartMix] Error clearing persisted cache: $e');
+  } catch (_) {
+    // Ignore cache clear error
   }
 }
 
@@ -491,7 +482,13 @@ final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String
   final playlistService = ref.read(playlistServiceProvider);
 
   List<JellyfinTrack> result;
-  if (mixType == 'daily') {
+  if (mixType.startsWith('genre_')) {
+    final genre = Uri.decodeComponent(mixType.substring('genre_'.length));
+    result = await playlistService.getSmartMix(
+      genreFilter: [genre],
+      libraryTracks: tracks,
+    );
+  } else if (mixType == 'daily') {
     result = await playlistService.getSmartMix(libraryTracks: tracks);
   } else if (mixType == 'daily_drive') {
     final podcastService = ref.read(podcastServiceProvider);
@@ -620,40 +617,34 @@ final recentlyPlayedProvider = FutureProvider<List<RecentlyPlayedItem>>((ref) as
   for (final sel in selections) {
     if (sel.type == 'album') {
       final album = albums.firstWhere((a) => a.id == sel.id, orElse: () => null as dynamic);
-      if (album != null) {
-        items.add(RecentlyPlayedItem(
-          id: album.id,
-          title: album.name,
-          subtitle: album.artist,
-          imageTag: album.imageTag,
-          type: RecentlyPlayedType.album,
-          lastPlayedAt: sel.timestamp,
-        ));
-      }
+      items.add(RecentlyPlayedItem(
+        id: album.id,
+        title: album.name,
+        subtitle: album.artist,
+        imageTag: album.imageTag,
+        type: RecentlyPlayedType.album,
+        lastPlayedAt: sel.timestamp,
+      ));
     } else if (sel.type == 'artist') {
       final artist = artists.firstWhere((a) => a.id == sel.id, orElse: () => null as dynamic);
-      if (artist != null) {
-        items.add(RecentlyPlayedItem(
-          id: artist.id,
-          title: artist.name,
-          subtitle: 'Artist',
-          imageTag: artist.imageTag,
-          type: RecentlyPlayedType.artist,
-          lastPlayedAt: sel.timestamp,
-        ));
-      }
+      items.add(RecentlyPlayedItem(
+        id: artist.id,
+        title: artist.name,
+        subtitle: 'Artist',
+        imageTag: artist.imageTag,
+        type: RecentlyPlayedType.artist,
+        lastPlayedAt: sel.timestamp,
+      ));
     } else if (sel.type == 'playlist') {
       final playlist = playlists.firstWhere((p) => p.id == sel.id, orElse: () => null as dynamic);
-      if (playlist != null) {
-        items.add(RecentlyPlayedItem(
-          id: playlist.id,
-          title: playlist.name,
-          subtitle: '${playlist.trackCount} tracks',
-          imageTag: playlist.imageTag,
-          type: RecentlyPlayedType.playlist,
-          lastPlayedAt: sel.timestamp,
-        ));
-      }
+      items.add(RecentlyPlayedItem(
+        id: playlist.id,
+        title: playlist.name,
+        subtitle: '${playlist.trackCount} tracks',
+        imageTag: playlist.imageTag,
+        type: RecentlyPlayedType.playlist,
+        lastPlayedAt: sel.timestamp,
+      ));
     }
   }
 
@@ -680,13 +671,153 @@ final recentPlaylistsProvider = FutureProvider<List<JellyfinPlaylist>>((ref) asy
 });
 
 // ---------------------------------------------------------------------------
-// New For You (recently-added unplayed albums)
+// New For You (recently-added unplayed albums with 14-day filter + fallback)
 // ---------------------------------------------------------------------------
 
-final newAlbumsProvider = FutureProvider<List<JellyfinAlbum>>((ref) async {
+class NewForYouData {
+  final List<JellyfinAlbum> albums;
+  final bool isFallback;
+  const NewForYouData({required this.albums, required this.isFallback});
+}
+
+final newAlbumsProvider = FutureProvider<NewForYouData>((ref) async {
   final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getNewAlbums();
+  if (service == null) return const NewForYouData(albums: [], isFallback: false);
+
+  final rawNewAlbums = await service.getNewAlbums(limit: 20);
+  final twoWeeksAgo = DateTime.now().subtract(const Duration(days: 14));
+
+  final recentNewAlbums = rawNewAlbums.where((album) {
+    if (album.dateCreated == null) return false;
+    return album.dateCreated!.isAfter(twoWeeksAgo);
+  }).toList();
+
+  if (recentNewAlbums.isNotEmpty) {
+    return NewForYouData(albums: recentNewAlbums, isFallback: false);
+  }
+
+  // Fallback: Albums related to recent listens and categories/genres
+  final allAlbums = ref.watch(albumsProvider).valueOrNull ?? await service.getAlbums();
+  final recentPlays = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
+
+  // Preferred artists & genres
+  final preferredArtists = <String>{};
+  final preferredGenres = <String>{};
+
+  for (final item in recentPlays) {
+    if (item.type == RecentlyPlayedType.artist) {
+      preferredArtists.add(item.title.toLowerCase());
+    } else if (item.type == RecentlyPlayedType.album) {
+      preferredArtists.add(item.subtitle.toLowerCase());
+    }
+  }
+
+  for (final album in allAlbums) {
+    if (preferredArtists.contains(album.artist.toLowerCase())) {
+      preferredGenres.addAll(album.genres.map((g) => g.toLowerCase()));
+    }
+  }
+
+  final scoredAlbums = <({JellyfinAlbum album, int score})>[];
+  for (final album in allAlbums) {
+    int score = 0;
+    if (preferredArtists.contains(album.artist.toLowerCase())) {
+      score += 3;
+    }
+    for (final g in album.genres) {
+      if (preferredGenres.contains(g.toLowerCase())) {
+        score += 2;
+      }
+    }
+    if (score > 0) {
+      scoredAlbums.add((album: album, score: score));
+    }
+  }
+
+  scoredAlbums.sort((a, b) => b.score.compareTo(a.score));
+
+  List<JellyfinAlbum> fallbackAlbums = scoredAlbums.map((s) => s.album).take(12).toList();
+  if (fallbackAlbums.isEmpty) {
+    fallbackAlbums = (List<JellyfinAlbum>.from(allAlbums)..shuffle()).take(12).toList();
+  }
+
+  return NewForYouData(albums: fallbackAlbums, isFallback: true);
+});
+
+// ---------------------------------------------------------------------------
+// Shuffled Home Albums (biased / inspired by recent listens)
+// ---------------------------------------------------------------------------
+
+final homeAlbumsProvider = Provider<AsyncValue<List<JellyfinAlbum>>>((ref) {
+  final albumsAsync = ref.watch(albumsProvider);
+  return albumsAsync.whenData((albums) {
+    if (albums.isEmpty) return [];
+
+    final recentPlays = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
+
+    final preferredArtists = <String>{};
+    for (final item in recentPlays) {
+      if (item.type == RecentlyPlayedType.artist) {
+        preferredArtists.add(item.title.toLowerCase());
+      } else if (item.type == RecentlyPlayedType.album) {
+        preferredArtists.add(item.subtitle.toLowerCase());
+      }
+    }
+
+    final inspired = <JellyfinAlbum>[];
+    final others = <JellyfinAlbum>[];
+
+    for (final album in albums) {
+      if (preferredArtists.contains(album.artist.toLowerCase())) {
+        inspired.add(album);
+      } else {
+        others.add(album);
+      }
+    }
+
+    final rng = Random();
+    final shuffledInspired = List<JellyfinAlbum>.from(inspired)..shuffle(rng);
+    final shuffledOthers = List<JellyfinAlbum>.from(others)..shuffle(rng);
+
+    return [...shuffledInspired, ...shuffledOthers];
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home Genre Mixes (top listened / library genres)
+// ---------------------------------------------------------------------------
+
+final homeGenreMixesProvider = FutureProvider<List<String>>((ref) async {
+  final playlistService = ref.watch(playlistServiceProvider);
+  final topListened = await playlistService.getTopListenedGenres(limit: 8);
+
+  final tracks = ref.watch(tracksProvider).valueOrNull ?? [];
+  final genreCounts = <String, int>{};
+  for (final t in tracks) {
+    for (final g in t.genres) {
+      final clean = g.trim();
+      if (clean.isNotEmpty) {
+        genreCounts[clean] = (genreCounts[clean] ?? 0) + 1;
+      }
+    }
+  }
+
+  final libraryGenres = genreCounts.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+
+  final result = <String>[];
+  for (final g in topListened) {
+    if (genreCounts.containsKey(g) && !result.contains(g)) {
+      result.add(g);
+    }
+  }
+  for (final entry in libraryGenres) {
+    if (!result.contains(entry.key)) {
+      result.add(entry.key);
+    }
+    if (result.length >= 8) break;
+  }
+  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -711,7 +842,7 @@ final androidAutoSyncProvider = Provider<void>((ref) {
   final artists = ref.watch(artistsProvider).valueOrNull ?? [];
   final playlists = ref.watch(playlistsProvider).valueOrNull ?? [];
   final recentlyPlayed = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
-  final newAlbums = ref.watch(newAlbumsProvider).valueOrNull ?? [];
+  final newAlbums = ref.watch(newAlbumsProvider).valueOrNull?.albums ?? [];
 
   if (service != null) {
     handler.updateAndroidAutoLibrary(

@@ -20,6 +20,8 @@ import '../services/playlist_service.dart';
 import '../providers/library_provider.dart';
 import 'android_auto_handler.dart';
 import '../services/podcast_service.dart';
+import '../models/podcast_episode.dart';
+import '../models/podcast_feed.dart';
 
 /// Audio handler that integrates just_audio with audio_service, providing
 /// background playback, media notifications, and Android Auto support.
@@ -38,9 +40,10 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   String? _currentSourceType;
   String? _currentSourceId;
   String? _currentSourceTitle;
+  int? _originalSourceLength;
   bool _currentTrackCountedAsListen = false;
 
-  List<JellyfinTrack> get currentQueue => _queue;
+  List<JellyfinTrack> get currentQueue => List<JellyfinTrack>.unmodifiable(_queue);
   int get currentIndex => _currentIndex;
   String? get currentSourceType => _currentSourceType;
   String? get currentSourceId => _currentSourceId;
@@ -105,8 +108,18 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       if (index != null && index < _queue.length) {
         _currentIndex = index;
         _currentTrackCountedAsListen = false;
+
+        // If we advanced beyond the original album/playlist/search, clear source so UI shows "Now Playing"
+        if (_originalSourceLength != null && index >= _originalSourceLength!) {
+          _currentSourceType = 'queue';
+          _currentSourceId = null;
+          _currentSourceTitle = null;
+        }
+
         // Publish immediately with the HTTPS art URL so UI shows something fast
         mediaItem.add(_trackToMediaItem(_queue[index]));
+        _emitPlaybackState();
+
         // Pre-fetch the next track asynchronously.
         _prefetchNext(index);
         // Then asynchronously download art to a local file and republish
@@ -116,6 +129,11 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         // Save state immediately on track change!
         unawaited(_savePlaybackState());
         unawaited(_savePlaybackPositionImmediately(Duration.zero));
+
+        // If we are reaching the end of the queue, proactively queue smart continue tracks
+        if (_queue.isNotEmpty && index >= _queue.length - 1) {
+          unawaited(_handleSmartContinue(autoPlay: false));
+        }
       }
     });
 
@@ -139,6 +157,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             unawaited(_playlistService.recordPlay(currentTrack.jellyfinId));
           }
         }
+
+        // Trigger smart continue on playback finish
+        unawaited(_handleSmartContinue(autoPlay: true));
       }
     });
 
@@ -167,7 +188,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
             if (pos >= threshold) {
               _currentTrackCountedAsListen = true;
-              print('[JellyfinAudioHandler] Listen threshold met for ${currentTrack.name} (${pos.inSeconds}s >= ${threshold.inSeconds}s). Recording play.');
               unawaited(_playlistService.recordPlay(currentTrack.jellyfinId));
             }
           }
@@ -190,8 +210,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     String? fromId,
     String? fromTitle,
   }) async {
-    _queue = queue ?? [track];
+    _queue = queue != null ? List<JellyfinTrack>.from(queue) : [track];
     _currentIndex = queueIndex;
+    _originalSourceLength = queue != null ? queue.length : 1;
     _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'track';
     _currentSourceId = fromId ?? track.id;
@@ -205,8 +226,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     unawaited(_savePlaybackState());
     unawaited(_savePlaybackPositionImmediately(Duration.zero));
 
-    final source = _buildAudioSource(track);
-    await _player.setAudioSource(source);
+    final sources = _queue.map(_buildAudioSource).toList();
+    final concatenating = ConcatenatingAudioSource(children: sources);
+    await _player.setAudioSource(concatenating, initialIndex: _currentIndex);
     await _player.play();
   }
 
@@ -219,8 +241,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     String? fromId,
     String? fromTitle,
   }) async {
-    _queue = tracks;
+    _queue = List<JellyfinTrack>.from(tracks);
     _currentIndex = startIndex;
+    _originalSourceLength = tracks.length;
     _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'queue';
     _currentSourceId = fromId;
@@ -268,9 +291,17 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final currentPos = _player.position;
       final duration = _player.duration ?? Duration.zero;
       final target = currentPos + const Duration(seconds: 15);
-      await seek(target < duration ? target : duration);
+      if (duration > Duration.zero && target >= duration) {
+        await _handleSmartContinue(autoPlay: true);
+      } else {
+        await seek(target < duration ? target : duration);
+      }
     } else {
-      await _player.seekToNext();
+      if (!_player.hasNext || _currentIndex >= _queue.length - 1) {
+        await _handleSmartContinue(autoPlay: true);
+      } else {
+        await _player.seekToNext();
+      }
     }
   }
 
@@ -349,8 +380,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           final tracks = await _playlistService.jellyfinService.getPlaylistTracks(playlistId);
           _autoHandler.updateContainer(parentMediaId, tracks);
           _notifyChildrenChanged(parentMediaId);
-        } catch (e) {
-          print('Failed to load playlist tracks for Android Auto: $e');
+        } catch (_) {
+          // Ignore error
         }
       }
     } else if (parentMediaId.startsWith(kPrefixAlbum)) {
@@ -360,8 +391,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           final tracks = await _playlistService.jellyfinService.getAlbumTracks(albumId);
           _autoHandler.updateContainer(parentMediaId, tracks);
           _notifyChildrenChanged(parentMediaId);
-        } catch (e) {
-          print('Failed to load album tracks for Android Auto: $e');
+        } catch (_) {
+          // Ignore error
         }
       }
     } else if (parentMediaId.startsWith('smart_mix_')) {
@@ -390,8 +421,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             }
             _autoHandler.updateContainer(parentMediaId, mixTracks);
             _notifyChildrenChanged(parentMediaId);
-          } catch (e) {
-            print('Failed to load smart mix tracks for Android Auto: $e');
+          } catch (_) {
+            // Ignore error
           }
         }());
       }
@@ -574,8 +605,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           _queue[_currentIndex].id == track.id) {
         _republishMediaItemWithFileArt(track, file.path);
       }
-    } catch (e) {
-      print('[JellyfinAudioHandler] Error caching artwork: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -662,8 +693,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         await _loadLibraryFromDb();
         await _restorePlaybackState();
       }
-    } catch (e) {
-      print('Error loading credentials in background service: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -696,8 +727,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       List<JellyfinAlbum> newAlbums = [];
       try {
         newAlbums = await svc.getNewAlbums();
-      } catch (e) {
-        print('Error loading new albums in background service: $e');
+      } catch (_) {
+        // Ignore error
       }
 
       // Load recently played from SharedPreferences
@@ -748,8 +779,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
               }
             }
           }
-        } catch (e) {
-          print('Error loading recently played in background: $e');
+        } catch (_) {
+          // Ignore error
         }
       }
 
@@ -778,7 +809,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           dateCreated: local.dateCreated,
         );
       }).toList();
-      print('[JellyfinAudioHandler] Loaded ${_allTracksCache.length} tracks from local database cache.');
 
       _autoHandler.updateLibrary(
         playlists,
@@ -816,16 +846,15 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             )).toList();
             await _playlistService.db.bulkInsertLocalTracks(companions);
 
-            print('[JellyfinAudioHandler] Eagerly loaded ${_allTracksCache.length} tracks into background cache and saved to DB.');
-          } catch (e) {
-            print('[JellyfinAudioHandler] Failed to eagerly load tracks: $e');
+          } catch (_) {
+            // Ignore error
           } finally {
             _inFlightAllTracksFetch = null;
           }
         }());
       }
-    } catch (e) {
-      print('Error loading library in background service: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -847,8 +876,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         'timestamp': DateTime.now().millisecondsSinceEpoch,
       });
       await prefs.setString('recent_selections', jsonEncode(list.take(20).toList()));
-    } catch (e) {
-      print('Error saving selection in background: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -858,7 +887,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   @override
   Future<void> playFromMediaId(String mediaId, [Map<String, dynamic>? extras]) async {
-    print('[JellyfinAudioHandler] playFromMediaId called: mediaId=$mediaId, extras=$extras');
     // Handle artist play all
     if (mediaId.startsWith('artist_play_all_')) {
       final artistId = mediaId.substring('artist_play_all_'.length);
@@ -875,15 +903,14 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             fromTitle: artistName,
           );
         }
-      } catch (e) {
-        print('Error playing artist tracks directly in background: $e');
+      } catch (_) {
+        // Ignore error
       }
       return;
     }
 
     // 1. Handle smart mixes
     if (mediaId == 'smart_mix_daily' || mediaId == 'smart_mix_heavy_rotation' || mediaId == 'smart_mix_undiscovered') {
-      print('[JellyfinAudioHandler] playMediaId: Direct smart mix play requested for $mediaId');
       try {
         List<JellyfinTrack> libraryTracks;
         if (_allTracksCache.isNotEmpty) {
@@ -896,7 +923,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           _allTracksCache = libraryTracks;
           _inFlightAllTracksFetch = null;
         }
-        print('[JellyfinAudioHandler] playMediaId: smart_mix using ${libraryTracks.length} tracks.');
         List<JellyfinTrack> mixTracks = [];
         if (mediaId == 'smart_mix_daily') {
           mixTracks = await _playlistService.getSmartMix(libraryTracks: libraryTracks);
@@ -905,7 +931,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         } else if (mediaId == 'smart_mix_undiscovered') {
           mixTracks = await _playlistService.getUndiscovered(libraryTracks: libraryTracks);
         }
-        print('[JellyfinAudioHandler] playMediaId: smart_mix generated ${mixTracks.length} tracks');
         if (mixTracks.isNotEmpty) {
           final mixName = mediaId == 'smart_mix_daily'
               ? 'Daily Mix'
@@ -919,19 +944,15 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             fromId: mediaId,
             fromTitle: mixName,
           );
-          print('[JellyfinAudioHandler] playMediaId: smart_mix playQueue started successfully');
-        } else {
-          print('[JellyfinAudioHandler] playMediaId: smart_mix generated empty track list');
         }
-      } catch (e, stack) {
-        print('Error playing smart mix directly in background: $e\n$stack');
+      } catch (_) {
+        // Ignore error
       }
       return;
     }
 
     // 2. Resolve container ID
     String? containerId = extras?.containsKey('containerId') == true ? extras!['containerId'] as String? : null;
-    print('[JellyfinAudioHandler] playMediaId: extras containerId=$containerId');
 
     if (containerId == null) {
       // Heuristic 1: check if the track is in the container the user is currently browsing
@@ -939,23 +960,17 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         final tracks = _autoHandler.getTracksForContainer(_lastBrowsedContainerId!);
         if (tracks.any((t) => t.id == mediaId)) {
           containerId = _lastBrowsedContainerId;
-          print('[JellyfinAudioHandler] playMediaId: resolved containerId=$containerId via _lastBrowsedContainerId');
         }
       }
       
       // Heuristic 2: fall back to mapping scan
-      if (containerId == null) {
-        containerId = _autoHandler.findContainerForTrack(mediaId);
-        print('[JellyfinAudioHandler] playMediaId: resolved containerId=$containerId via findContainerForTrack');
-      }
+      containerId ??= _autoHandler.findContainerForTrack(mediaId);
     }
 
     if (containerId != null) {
       final tracks = _autoHandler.getTracksForContainer(containerId);
-      print('[JellyfinAudioHandler] playMediaId: found ${tracks.length} tracks in container=$containerId');
       if (tracks.isNotEmpty) {
         final index = tracks.indexWhere((t) => t.id == mediaId);
-        print('[JellyfinAudioHandler] playMediaId: track index=$index for mediaId=$mediaId');
         if (index != -1) {
           // Record selection
           String? fromType;
@@ -980,7 +995,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             fromTitle = tracks[index].artists.firstOrNull ?? tracks[index].albumArtist;
           }
 
-          print('[JellyfinAudioHandler] playMediaId: starting playQueue at index=$index');
           try {
             await playQueue(
               tracks,
@@ -989,9 +1003,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
               fromId: fromId,
               fromTitle: fromTitle,
             );
-            print('[JellyfinAudioHandler] playMediaId: playQueue completed successfully');
-          } catch (e) {
-            print('[JellyfinAudioHandler] playMediaId: playQueue failed with error: $e');
+          } catch (_) {
+            // Ignore error
           }
           return;
         }
@@ -999,16 +1012,11 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     }
 
     // 3. Fallback: play single track
-    print('[JellyfinAudioHandler] playMediaId: fallback to single track for mediaId=$mediaId');
     try {
       var track = _autoHandler.findTrackById(mediaId);
-      if (track == null) {
-        print('[JellyfinAudioHandler] playMediaId: track not cached locally. Fetching from Jellyfin server...');
-        track = await _playlistService.jellyfinService.getTrack(mediaId);
-      }
+      track ??= await _playlistService.jellyfinService.getTrack(mediaId);
 
       if (track != null) {
-        print('[JellyfinAudioHandler] playMediaId: playing track ${track.title}');
         if (track.albumId.isNotEmpty) {
           unawaited(_recordSelection(track.albumId, 'album'));
         }
@@ -1018,12 +1026,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
           fromId: track.id,
           fromTitle: track.title,
         );
-        print('[JellyfinAudioHandler] playMediaId: playTrack completed successfully');
-      } else {
-        print('[JellyfinAudioHandler] playMediaId: track NOT found anywhere for mediaId=$mediaId');
       }
-    } catch (e, stack) {
-      print('[JellyfinAudioHandler] playMediaId fallback failed: $e\n$stack');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -1081,8 +1086,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         _artCache[remoteUrl] = file.path;
         _pendingDownloads.remove(remoteUrl);
         _notifyChildrenChanged(parentId);
-      } catch (e) {
-        print('[JellyfinAudioHandler] Error background downloading browse art: $e');
+      } catch (_) {
         _pendingDownloads.remove(remoteUrl);
         _failedDownloads.add(remoteUrl);
       }
@@ -1159,8 +1163,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       } else {
         await prefs.remove('playback_source_title');
       }
-    } catch (e) {
-      print('[JellyfinAudioHandler] Error saving playback state: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -1171,8 +1175,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setInt('playback_position_ms', position.inMilliseconds);
-      } catch (e) {
-        print('[JellyfinAudioHandler] Error saving playback position: $e');
+      } catch (_) {
+        // Ignore error
       }
     }
   }
@@ -1182,8 +1186,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('playback_position_ms', position.inMilliseconds);
-    } catch (e) {
-      print('[JellyfinAudioHandler] Error saving playback position immediately: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -1224,7 +1228,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       _currentSourceId = prefs.getString('playback_source_id');
       _currentSourceTitle = prefs.getString('playback_source_title');
 
-      _queue = tracks;
+      _queue = List<JellyfinTrack>.from(tracks);
       _currentIndex = index;
 
       // Publish the restored queue and active item to audio_service
@@ -1267,9 +1271,160 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         shuffleMode: shuffleMode,
       ));
 
-      print('[JellyfinAudioHandler] Restored playback state successfully: index=$_currentIndex, positionMs=$positionMs, source=$_currentSourceTitle');
-    } catch (e, stack) {
-      print('[JellyfinAudioHandler] Error restoring playback state: $e\n$stack');
+    } catch (_) {
+      // Ignore error
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Smart Continue
+  // ---------------------------------------------------------------------------
+
+  bool _isSmartContinueLoading = false;
+
+  Future<void> _handleSmartContinue({bool autoPlay = false}) async {
+    if (_isSmartContinueLoading) return;
+    if (_queue.isEmpty) return;
+
+    _isSmartContinueLoading = true;
+    try {
+      final currentTrack =
+          _queue[_currentIndex < _queue.length ? _currentIndex : _queue.length - 1];
+      final isPodcast = currentTrack.id.startsWith('podcast_');
+
+      if (isPodcast) {
+        await _continuePodcast(currentTrack, autoPlay: autoPlay);
+      } else {
+        await _continueMusic(autoPlay: autoPlay);
+      }
+    } catch (_) {
+      // Ignore error
+    } finally {
+      _isSmartContinueLoading = false;
+    }
+  }
+
+  Future<List<JellyfinTrack>> _getLibraryTracks() async {
+    if (_allTracksCache.isNotEmpty) return _allTracksCache;
+    try {
+      final dbTracks = await _cacheService.db.getAllLocalTracks();
+      if (dbTracks.isNotEmpty) {
+        _allTracksCache = dbTracks.map(localTrackToJellyfin).toList();
+        return _allTracksCache;
+      }
+    } catch (_) {}
+
+    try {
+      final remoteTracks = await _playlistService.jellyfinService.getTracks();
+      if (remoteTracks.isNotEmpty) {
+        _allTracksCache = remoteTracks;
+        return remoteTracks;
+      }
+    } catch (_) {}
+
+    return _queue;
+  }
+
+  Future<void> _continuePodcast(JellyfinTrack currentTrack,
+      {bool autoPlay = false}) async {
+    final podcastService = PodcastService();
+    final feedId = currentTrack.albumId.startsWith('podcast_')
+        ? currentTrack.albumId.substring('podcast_'.length)
+        : currentTrack.albumId;
+
+    final feeds = await podcastService.getSubscribedFeeds();
+    PodcastFeed? targetFeed;
+    for (final f in feeds) {
+      if (f.id == feedId) {
+        targetFeed = f;
+        break;
+      }
+    }
+    targetFeed ??= feeds.isNotEmpty ? feeds.first : null;
+
+    if (targetFeed != null) {
+      final episodes = await podcastService.fetchEpisodes(targetFeed);
+      final queueGuids = _queue
+          .where((t) => t.id.startsWith('podcast_'))
+          .map((t) => t.id.substring('podcast_'.length))
+          .toSet();
+
+      final listenedSet = await podcastService.getListenedEpisodes();
+
+      PodcastEpisode? nextEpisode;
+      for (final ep in episodes) {
+        if (!queueGuids.contains(ep.guid)) {
+          if (!listenedSet.contains(ep.guid)) {
+            nextEpisode = ep;
+            break;
+          }
+        }
+      }
+
+      nextEpisode ??= episodes.firstWhere(
+        (ep) => !queueGuids.contains(ep.guid),
+        orElse: () => episodes.first,
+      );
+
+      final nextTrack = nextEpisode.toJellyfinTrack();
+      await _appendTracksToQueue([nextTrack], autoPlay: autoPlay);
+    }
+  }
+
+  Future<void> _continueMusic({bool autoPlay = false}) async {
+    final libraryTracks = await _getLibraryTracks();
+    final excludedIds = _queue.map((t) => t.id).toSet();
+
+    final newTracks = await _playlistService.getRecommendedTracksForPlaylist(
+      playlistTracks: _queue,
+      libraryTracks: libraryTracks,
+      excludedTrackIds: excludedIds,
+      count: 5,
+    );
+
+    if (newTracks.isNotEmpty) {
+      await _appendTracksToQueue(newTracks, autoPlay: autoPlay);
+    }
+  }
+
+  Future<void> _appendTracksToQueue(List<JellyfinTrack> newTracks,
+      {bool autoPlay = false}) async {
+    _queue.addAll(newTracks);
+    queue.add(_queue.map(_trackToMediaItem).toList());
+
+    final audioSource = _player.audioSource;
+    final newSources = newTracks.map(_buildAudioSource).toList();
+
+    if (audioSource is ConcatenatingAudioSource) {
+      await audioSource.addAll(newSources);
+    } else {
+      final allSources = _queue.map(_buildAudioSource).toList();
+      final newConcat = ConcatenatingAudioSource(children: allSources);
+      await _player.setAudioSource(
+        newConcat,
+        initialIndex: _currentIndex,
+        initialPosition: _player.position,
+      );
+    }
+
+    if (autoPlay) {
+      final targetIndex = _currentIndex + 1 < _queue.length
+          ? _currentIndex + 1
+          : _queue.length - newTracks.length;
+      _currentIndex = targetIndex;
+
+      // Update mediaItem and emit playbackState so PlayerScreen and notifications update immediately
+      mediaItem.add(_trackToMediaItem(_queue[targetIndex]));
+      _emitPlaybackState();
+
+      if (_originalSourceLength != null && targetIndex >= _originalSourceLength!) {
+        _currentSourceType = 'queue';
+        _currentSourceId = null;
+        _currentSourceTitle = null;
+      }
+
+      await _player.seek(Duration.zero, index: targetIndex);
+      await _player.play();
     }
   }
 }

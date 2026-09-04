@@ -5,8 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
-import '../services/playlist_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/playlist_recommendations_widget.dart';
 
 class PlaylistAddTracksScreen extends ConsumerStatefulWidget {
   final String playlistId;
@@ -81,30 +81,42 @@ class _PlaylistAddTracksScreenState
         ],
       ),
       body: q.isEmpty
-          ? Center(
+          ? SingleChildScrollView(
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (isLoading) ...[                  
-                    const SizedBox(
-                      width: 36, height: 36,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2.5, color: AppColors.primary),
+                  PlaylistRecommendationsWidget(
+                    playlistId: widget.playlistId,
+                    currentTracks: playlistTracks,
+                  ),
+                  const SizedBox(height: 24),
+                  Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isLoading) ...[
+                          const SizedBox(
+                            width: 36, height: 36,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.5, color: AppColors.primary),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text('Loading your library...',
+                              style: TextStyle(
+                                  color: AppColors.textMuted, fontSize: 15)),
+                        ] else ...[
+                          const Icon(Icons.search_rounded,
+                              color: AppColors.textMuted, size: 40),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Or search ${allTracks.length} tracks above to add',
+                            style: const TextStyle(
+                                color: AppColors.textMuted, fontSize: 14),
+                          ),
+                        ],
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    const Text('Loading your library...',
-                        style: TextStyle(
-                            color: AppColors.textMuted, fontSize: 15)),
-                  ] else ...[                  
-                    const Icon(Icons.search_rounded,
-                        color: AppColors.textMuted, size: 48),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Search ${allTracks.length} tracks to add',
-                      style: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 15),
-                    ),
-                  ],
+                  ),
+                  const SizedBox(height: 48),
                 ],
               ),
             )
@@ -190,12 +202,13 @@ class _PlaylistAddTracksScreenState
                                   widget.playlistId,
                                   track.id,
                                 );
+                                if (!context.mounted) return;
                                 if (success) {
                                   setState(() => _justAdded.add(track.id));
                                   ref.invalidate(playlistTracksProvider(
                                       widget.playlistId));
                                   ref.invalidate(playlistsProvider);
-                                } else if (mounted) {
+                                } else {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
                                       content: Text('Failed to add track'),

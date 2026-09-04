@@ -213,7 +213,7 @@ class QueueNotifier extends StateNotifier<QueueState> {
     String? fromTitle,
   }) async {
     state = state.copyWith(
-      tracks: tracks,
+      tracks: List<JellyfinTrack>.from(tracks),
       currentIndex: startIndex,
       isLoading: true,
       sourceType: fromType,
@@ -238,7 +238,8 @@ class QueueNotifier extends StateNotifier<QueueState> {
     String? fromId,
     String? fromTitle,
   }) async {
-    final effectiveQueue = queue ?? [track];
+    final effectiveQueue =
+        queue != null ? List<JellyfinTrack>.from(queue) : [track];
     state = state.copyWith(
       tracks: effectiveQueue,
       currentIndex: queueIndex,

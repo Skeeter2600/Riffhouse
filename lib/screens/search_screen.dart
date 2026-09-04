@@ -5,10 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../audio/queue_notifier.dart';
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
-import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/track_card.dart';
 
@@ -148,10 +146,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         // ── Tracks ──────────────────────────────────────────────────────────
         if (_results.tracks.isNotEmpty) ...[
           _sectionHeader('Tracks', _results.tracks.length),
-          ..._results.tracks.mapIndexed((i, t) => TrackCard(
+          ..._results.tracks.map((t) => TrackCard(
                 track: t,
-                queue: _results.tracks,
-                queueIndex: i,
               )),
         ],
 

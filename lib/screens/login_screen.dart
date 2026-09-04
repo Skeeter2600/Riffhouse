@@ -94,7 +94,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           ),
                           boxShadow: [
                             BoxShadow(
-                              color: AppColors.primary.withOpacity(0.5),
+                              color: AppColors.primary.withValues(alpha: 0.5),
                               blurRadius: 30,
                               spreadRadius: 4,
                             ),
@@ -122,7 +122,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           color: AppColors.textPrimary,
                           shadows: [
                             Shadow(
-                              color: AppColors.primary.withOpacity(0.6),
+                              color: AppColors.primary.withValues(alpha: 0.6),
                               blurRadius: 20,
                             ),
                           ],
@@ -226,11 +226,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
                                     color:
-                                        Colors.red.shade900.withOpacity(0.4),
+                                        Colors.red.shade900.withValues(alpha: 0.4),
                                     borderRadius: BorderRadius.circular(10),
                                     border: Border.all(
                                         color: Colors.red.shade400
-                                            .withOpacity(0.5)),
+                                            .withValues(alpha: 0.5)),
                                   ),
                                   child: Row(
                                     children: [
@@ -265,7 +265,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   borderRadius: BorderRadius.circular(14),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: AppColors.primary.withOpacity(0.4),
+                                      color: AppColors.primary.withValues(alpha: 0.4),
                                       blurRadius: 16,
                                       offset: const Offset(0, 6),
                                     ),

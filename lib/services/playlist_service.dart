@@ -223,8 +223,8 @@ class PlaylistService {
         final decoded = jsonDecode(jsonStr) as Map<String, dynamic>;
         return DailyMixConfig.fromJson(decoded);
       }
-    } catch (e) {
-      print('[PlaylistService] Error loading daily mix config: $e');
+    } catch (_) {
+      // Ignore error
     }
     return DailyMixConfig.defaultConfig();
   }
@@ -237,6 +237,40 @@ class PlaylistService {
   Future<void> resetDailyMixConfig() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_dailyMixConfigKey);
+  }
+
+  /// Removes [feedId] from any specific podcast slots in DailyMixConfig.
+  /// If a slot has no remaining podcast feeds, that slot is deleted.
+  Future<void> removePodcastFromDailyMixConfig(String feedId) async {
+    final currentConfig = await getDailyMixConfig();
+    final updatedSlots = <DailyMixSlotConfig>[];
+    bool changed = false;
+
+    for (final slot in currentConfig.slots) {
+      if (slot.slotType == DailyMixSlotType.podcast &&
+          slot.podcastSelectionType == PodcastSelectionType.specific) {
+        if (slot.podcastFeedIds.contains(feedId)) {
+          changed = true;
+          final remainingFeeds = slot.podcastFeedIds.where((id) => id != feedId).toList();
+          if (remainingFeeds.isNotEmpty) {
+            // Keep slot with remaining feeds
+            updatedSlots.add(slot.copyWith(podcastFeedIds: remainingFeeds));
+          } else {
+            // Drop this slot entirely because all of its feeds were removed
+            continue;
+          }
+        } else {
+          updatedSlots.add(slot);
+        }
+      } else {
+        updatedSlots.add(slot);
+      }
+    }
+
+    if (changed) {
+      final newConfig = currentConfig.copyWith(slots: updatedSlots);
+      await saveDailyMixConfig(newConfig);
+    }
   }
 
   /// Generates the Daily Drive / Mix based on the user's custom configuration.
@@ -274,8 +308,8 @@ class PlaylistService {
     List<PodcastFeed> subscribedFeeds = [];
     try {
       subscribedFeeds = await podcastService.getSubscribedFeeds();
-    } catch (e) {
-      print('[PlaylistService] generateCustomDailyMix: Failed to load feeds: $e');
+    } catch (_) {
+      // Ignore error
     }
 
     Set<String> listenedGuids = {};
@@ -493,8 +527,8 @@ class PlaylistService {
       }
 
       await prefs.setString(_genreStatsKey, jsonEncode(stats));
-    } catch (e) {
-      print('[PlaylistService] Error recording genre plays: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -513,8 +547,8 @@ class PlaylistService {
         });
         return entries.map((e) => e.key).take(limit).toList();
       }
-    } catch (e) {
-      print('[PlaylistService] Error getting top genres: $e');
+    } catch (_) {
+      // Ignore error
     }
     return [];
   }
@@ -534,8 +568,8 @@ class PlaylistService {
         });
         return entries.map((e) => e.key).take(limit).toList();
       }
-    } catch (e) {
-      print('[PlaylistService] Error getting recent genres: $e');
+    } catch (_) {
+      // Ignore error
     }
     return [];
   }
@@ -647,8 +681,8 @@ class PlaylistService {
       final cutoff90Days = DateTime.now().subtract(const Duration(days: 90)).millisecondsSinceEpoch;
       history[jellyfinId] = list.where((t) => (t as int) >= cutoff90Days).toList();
       await prefs.setString(_playTimestampsKey, jsonEncode(history));
-    } catch (e) {
-      print('[PlaylistService] Error recording play timestamp for $jellyfinId: $e');
+    } catch (_) {
+      // Ignore error
     }
 
     try {
@@ -662,8 +696,8 @@ class PlaylistService {
           await _recordGenrePlays(genres);
         }
       }
-    } catch (e) {
-      print('[PlaylistService] Error recording genre plays for $jellyfinId: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -686,8 +720,8 @@ class PlaylistService {
           }
         }
       }
-    } catch (e) {
-      print('[PlaylistService] Error getting recent play counts: $e');
+    } catch (_) {
+      // Ignore error
     }
 
     // Also include database records where lastPlayedAt is within the 3-week window if not in history
@@ -754,6 +788,108 @@ class PlaylistService {
   /// Records a skip event for [jellyfinId], incrementing skipCount.
   Future<void> recordSkip(String jellyfinId) async {
     await db.incrementSkipCount(jellyfinId);
+  }
+
+  /// Returns recommended tracks for a playlist or track continuation based on its current tracks.
+  /// Looks across the whole library for similar feel (primarily genre matching)
+  /// and enforces artist diversity so it avoids continuing with the same artist.
+  Future<List<JellyfinTrack>> getRecommendedTracksForPlaylist({
+    required List<JellyfinTrack> playlistTracks,
+    required List<JellyfinTrack> libraryTracks,
+    Set<String> excludedTrackIds = const {},
+    int count = 5,
+  }) async {
+    final playlistTrackIds = playlistTracks.map((t) => t.id).toSet();
+    final allExcluded = {...playlistTrackIds, ...excludedTrackIds};
+
+    final candidates = libraryTracks.where((t) => !allExcluded.contains(t.id)).toList();
+    if (candidates.isEmpty) return [];
+
+    final playlistArtists = <String>{};
+    final playlistGenres = <String>{};
+
+    // Primary seed is the most recent or active track
+    final seedTrack = playlistTracks.isNotEmpty ? playlistTracks.last : null;
+    final seedGenres = seedTrack?.genres.map((g) => g.toLowerCase().trim()).toSet() ?? {};
+
+    for (final track in playlistTracks) {
+      playlistArtists.addAll(track.artists.map((a) => a.toLowerCase().trim()));
+      if (track.albumArtist.isNotEmpty) {
+        playlistArtists.add(track.albumArtist.toLowerCase().trim());
+      }
+      playlistGenres.addAll(track.genres.map((g) => g.toLowerCase().trim()));
+    }
+
+    final rng = Random();
+
+    if (playlistTracks.isEmpty) {
+      final shuffled = List<JellyfinTrack>.from(candidates)..shuffle(rng);
+      return shuffled.take(count).toList();
+    }
+
+    final scored = <({JellyfinTrack track, double score})>[];
+
+    for (final track in candidates) {
+      double score = 0;
+      final trackGenres = track.genres.map((g) => g.toLowerCase().trim()).toSet();
+      final trackArtists = track.artists.map((a) => a.toLowerCase().trim()).toSet();
+      if (track.albumArtist.isNotEmpty) {
+        trackArtists.add(track.albumArtist.toLowerCase().trim());
+      }
+
+      // Strongest signal for feel: genre matches against current seed track
+      for (final g in trackGenres) {
+        if (seedGenres.contains(g)) {
+          score += 6.0;
+        } else if (playlistGenres.contains(g)) {
+          score += 3.0;
+        }
+      }
+
+      // Very minor artist boost (max 1.0) so we don't fixate on the same artist
+      for (final a in trackArtists) {
+        if (playlistArtists.contains(a)) {
+          score += 1.0;
+          break;
+        }
+      }
+
+      // Add random jitter (0.0 to 2.5) to explore the whole library with varied discoveries
+      score += rng.nextDouble() * 2.5;
+
+      scored.add((track: track, score: score));
+    }
+
+    scored.sort((a, b) => b.score.compareTo(a.score));
+
+    // Enforce artist diversity: maximum 1 song per artist in the 5 recommendations
+    final result = <JellyfinTrack>[];
+    final selectedArtists = <String>{};
+
+    for (final item in scored) {
+      final primaryArtist = (item.track.artists.firstOrNull ?? item.track.albumArtist).toLowerCase().trim();
+      if (primaryArtist.isNotEmpty && selectedArtists.contains(primaryArtist)) {
+        continue; // Skip duplicate artist in this continuation batch
+      }
+      result.add(item.track);
+      if (primaryArtist.isNotEmpty) {
+        selectedArtists.add(primaryArtist);
+      }
+      if (result.length >= count) break;
+    }
+
+    // If diversity filter left us with fewer than count, fill with remaining scored tracks
+    if (result.length < count) {
+      final pickedIds = result.map((t) => t.id).toSet();
+      for (final item in scored) {
+        if (!pickedIds.contains(item.track.id)) {
+          result.add(item.track);
+          if (result.length >= count) break;
+        }
+      }
+    }
+
+    return result;
   }
 }
 

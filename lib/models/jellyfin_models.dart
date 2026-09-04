@@ -1,5 +1,6 @@
 /// Plain data classes used to map Jellyfin API responses.
 /// These are NOT Isar collections — they are transient models for network data.
+library;
 
 class JellyfinUser {
   final String id;
@@ -137,6 +138,9 @@ class JellyfinAlbum {
   final String? imageTag;
   final int trackCount;
 
+  final DateTime? dateCreated;
+  final List<String> genres;
+
   String get jellyfinId => id;
   String? get artUri => null;
   String get artistId => '';
@@ -148,11 +152,15 @@ class JellyfinAlbum {
     this.year,
     this.imageTag,
     required this.trackCount,
+    this.dateCreated,
+    this.genres = const [],
   });
 
   factory JellyfinAlbum.fromJson(Map<String, dynamic> json) {
     final imageTags = json['ImageTags'] as Map<String, dynamic>?;
     final imageTag = imageTags?['Primary'] as String?;
+    final dateCreatedStr = json['DateCreated'] as String?;
+    final dateCreated = dateCreatedStr != null ? DateTime.tryParse(dateCreatedStr) : null;
 
     return JellyfinAlbum(
       id: (json['Id'] as String?) ?? '',
@@ -161,6 +169,8 @@ class JellyfinAlbum {
       year: json['ProductionYear'] as int?,
       imageTag: imageTag,
       trackCount: (json['ChildCount'] as int?) ?? 0,
+      dateCreated: dateCreated,
+      genres: List<String>.from(json['Genres'] as List? ?? []),
     );
   }
 

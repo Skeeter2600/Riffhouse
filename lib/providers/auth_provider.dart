@@ -1,8 +1,6 @@
-import 'package:audio_service/audio_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/drift.dart';
 
-import '../audio/audio_handler.dart';
 import '../audio/queue_notifier.dart';
 import '../database/app_database.dart';
 import '../main.dart'; // Import to access global singletons

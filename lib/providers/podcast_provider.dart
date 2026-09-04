@@ -3,14 +3,18 @@ import '../models/podcast_episode.dart';
 import '../models/podcast_feed.dart';
 import '../services/podcast_service.dart';
 
+import 'auth_provider.dart';
+import 'library_provider.dart';
+
 final podcastServiceProvider = Provider<PodcastService>((ref) {
   return PodcastService();
 });
 
 class SubscribedFeedsNotifier extends StateNotifier<AsyncValue<List<PodcastFeed>>> {
   final PodcastService _service;
+  final Ref _ref;
 
-  SubscribedFeedsNotifier(this._service) : super(const AsyncValue.loading()) {
+  SubscribedFeedsNotifier(this._service, this._ref) : super(const AsyncValue.loading()) {
     load();
   }
 
@@ -31,8 +35,8 @@ class SubscribedFeedsNotifier extends StateNotifier<AsyncValue<List<PodcastFeed>
       if (!currentList.any((f) => f.id == feed.id)) {
         state = AsyncValue.data([...currentList, feed]);
       }
-    } catch (e, st) {
-      print('Subscribe provider error: $e');
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -41,8 +45,14 @@ class SubscribedFeedsNotifier extends StateNotifier<AsyncValue<List<PodcastFeed>
       await _service.unsubscribeFromFeed(feedId);
       final currentList = state.valueOrNull ?? [];
       state = AsyncValue.data(currentList.where((f) => f.id != feedId).toList());
-    } catch (e, st) {
-      print('Unsubscribe provider error: $e');
+
+      // Auto-prune Daily Drive / Mix configuration slot if this podcast was in it
+      final playlistService = _ref.read(playlistServiceProvider);
+      await playlistService.removePodcastFromDailyMixConfig(feedId);
+      _ref.invalidate(dailyMixConfigProvider);
+      await clearSmartMixCache('daily_drive');
+    } catch (_) {
+      // Ignore error
     }
   }
 }
@@ -50,7 +60,7 @@ class SubscribedFeedsNotifier extends StateNotifier<AsyncValue<List<PodcastFeed>
 final subscribedFeedsProvider =
     StateNotifierProvider<SubscribedFeedsNotifier, AsyncValue<List<PodcastFeed>>>((ref) {
   final service = ref.watch(podcastServiceProvider);
-  return SubscribedFeedsNotifier(service);
+  return SubscribedFeedsNotifier(service, ref);
 });
 
 final podcastFeedsProvider = subscribedFeedsProvider;
