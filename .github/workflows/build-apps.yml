@@ -115,14 +115,16 @@ jobs:
         run: |
           flutter build macos --release
           cd build/macos/Build/Products/Release
-          zip -r ${{ github.workspace }}/Riffhouse-macOS.zip Riffhouse.app
+          # Target whatever .app file Flutter produced and name the zip Riffhouse-macOS.zip
+          zip -r ${{ github.workspace }}/Riffhouse-macOS.zip *.app
 
       # Build Unsigned iOS IPA for Sideloading
       - name: Build iOS IPA
         run: |
           flutter build ipa --release --no-codesign
           mkdir -p Payload
-          cp -r build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app Payload/
+          # Copy whatever .app was built in the iOS archive into Payload
+          cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app Payload/
           zip -r ${{ github.workspace }}/Riffhouse.ipa Payload
 
       - uses: actions/upload-artifact@v4
