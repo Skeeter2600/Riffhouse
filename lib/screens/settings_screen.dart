@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:flutter/services.dart';
+
+import '../services/url_launcher_service.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/download_provider.dart';
+import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -13,7 +18,13 @@ class SettingsScreen extends ConsumerWidget {
     final user = ref.watch(authProvider);
     final service = ref.watch(jellyfinServiceProvider);
 
-    return Scaffold(
+    return PopScope(
+      canPop: context.canPop(),
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        context.go('/home/library');
+      },
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
@@ -67,10 +78,28 @@ class SettingsScreen extends ConsumerWidget {
             subtitle: 'Manage offline tracks',
             onTap: () => context.push('/home/downloads'),
           ),
+          _SettingsTile(
+            icon: Icons.cleaning_services_rounded,
+            title: 'Prune Temporary Cache',
+            subtitle: 'Remove songs not in downloaded playlists',
+            onTap: () async {
+              final count = await ref.read(downloadProvider.notifier).pruneUnpinnedTracks();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(count > 0
+                        ? 'Cleaned up $count temporary tracks'
+                        : 'Cache clean. Only downloaded playlists retained.'),
+                    backgroundColor: AppColors.primary,
+                  ),
+                );
+              }
+            },
+          ),
           _DangerTile(
             icon: Icons.delete_outline,
-            title: 'Clear Cache',
-            subtitle: 'Remove all downloaded files',
+            title: 'Clear All Cache',
+            subtitle: 'Remove all downloaded files from device',
             onTap: () => _confirmClearCache(context, ref),
           ),
 
@@ -86,21 +115,37 @@ class SettingsScreen extends ConsumerWidget {
           _SettingsTile(
             icon: Icons.code_rounded,
             title: 'GitHub',
-            subtitle: 'github.com/your-repo/riffhouse',
-            onTap: () {
-              // URL launcher not yet wired; show a snackbar instead.
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('https://github.com/your-repo/riffhouse'),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
+            subtitle: 'Riffhouse',
+            onTap: () async {
+              const url = 'https://github.com/Skeeter2600/Riffhouse';
+              try {
+                await UrlLauncherService.launch(url);
+              } on PlatformException catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Could not open browser: ${e.message}'),
+                      duration: const Duration(seconds: 4),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Error: $e'),
+                      duration: const Duration(seconds: 4),
+                    ),
+                  );
+                }
+              }
             },
           ),
 
           const SizedBox(height: 32),
         ],
       ),
+    ),
     );
   }
 
@@ -161,7 +206,18 @@ class SettingsScreen extends ConsumerWidget {
           ElevatedButton(
             style:
                 ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await ref.read(cachedTracksProvider.notifier).clearAll();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('All cached tracks deleted'),
+                    backgroundColor: AppColors.primary,
+                  ),
+                );
+              }
+            },
             child:
                 const Text('Clear', style: TextStyle(color: Colors.white)),
           ),

@@ -10,8 +10,6 @@ import '../providers/podcast_provider.dart';
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
 
-import '../models/podcast_recommendation.dart';
-
 class PodcastsScreen extends ConsumerStatefulWidget {
   const PodcastsScreen({super.key});
 
@@ -42,6 +40,15 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
           Future<void> handleSubscribe(String url) async {
             final cleanUrl = url.trim();
             if (cleanUrl.isEmpty) return;
+
+            if (subscribedUrls.contains(cleanUrl.toLowerCase())) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Already subscribed to this feed')),
+                );
+              }
+              return;
+            }
 
             setDialogState(() => _isSubscribing = true);
             try {
@@ -82,107 +89,46 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
             ),
             content: SizedBox(
               width: double.maxFinite,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Enter any RSS feed URL or choose from popular recommendations:',
-                      style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _rssController,
-                      decoration: InputDecoration(
-                        hintText: 'https://...',
-                        labelText: 'Custom RSS Feed URL',
-                        suffixIcon: IconButton(
-                          icon: const Icon(Icons.arrow_forward_rounded, color: AppColors.primary),
-                          onPressed: _isSubscribing ? null : () => handleSubscribe(_rssController.text),
-                        ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Enter the RSS feed URL of the podcast to subscribe:',
+                    style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _rssController,
+                    decoration: InputDecoration(
+                      hintText: 'https://...',
+                      labelText: 'Podcast RSS Feed URL',
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.arrow_forward_rounded, color: AppColors.primary),
+                        onPressed: _isSubscribing ? null : () => handleSubscribe(_rssController.text),
                       ),
-                      style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
                     ),
+                    style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+                  ),
+                  if (_isSubscribing) ...[
                     const SizedBox(height: 16),
-                    const Row(
-                      children: [
-                        Icon(Icons.star_rounded, color: AppColors.accent, size: 16),
-                        SizedBox(width: 4),
-                        Text(
-                          'Popular Recommendations',
-                          style: TextStyle(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    ListView.separated(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: popularPodcastRecommendations.length,
-                      separatorBuilder: (_, __) => const Divider(color: AppColors.glassBorder, height: 1),
-                      itemBuilder: (context, i) {
-                        final rec = popularPodcastRecommendations[i];
-                        final isSubscribed = subscribedUrls.contains(rec.rssUrl.toLowerCase().trim());
-
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                          title: Text(
-                            rec.title,
-                            style: const TextStyle(
-                              color: AppColors.textPrimary,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
-                            ),
-                          ),
-                          subtitle: Text(
-                            '${rec.publisher} • ${rec.category}',
-                            style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
-                          ),
-                          trailing: isSubscribed
-                              ? Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white10,
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: const Text(
-                                    'Subscribed',
-                                    style: TextStyle(color: AppColors.textMuted, fontSize: 11),
-                                  ),
-                                )
-                              : ElevatedButton(
-                                  onPressed: _isSubscribing ? null : () => handleSubscribe(rec.rssUrl),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primary,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                    minimumSize: const Size(60, 30),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  ),
-                                  child: const Text(
-                                    'Add',
-                                    style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                        );
-                      },
-                    ),
-                    if (_isSubscribing) ...[
-                      const SizedBox(height: 16),
-                      const Center(child: CircularProgressIndicator(color: AppColors.primary)),
-                    ],
+                    const Center(child: CircularProgressIndicator(color: AppColors.primary)),
                   ],
-                ),
+                ],
               ),
             ),
             actions: [
               TextButton(
                 onPressed: _isSubscribing ? null : () => Navigator.pop(ctx),
-                child: const Text('Close', style: TextStyle(color: AppColors.textSecondary)),
+                child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
+              ),
+              ElevatedButton(
+                onPressed: _isSubscribing ? null : () => handleSubscribe(_rssController.text),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Subscribe', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ],
           );

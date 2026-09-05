@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shimmer/shimmer.dart';
 
+import '../models/jellyfin_models.dart';
 import '../models/podcast_episode.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
@@ -11,10 +13,28 @@ import '../providers/podcast_provider.dart';
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/album_card.dart';
+import '../widgets/track_card.dart';
 import 'package:intl/intl.dart';
 
-class LibraryScreen extends ConsumerWidget {
+class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
+
+  @override
+  ConsumerState<LibraryScreen> createState() => _LibraryScreenState();
+}
+
+class _LibraryScreenState extends ConsumerState<LibraryScreen> {
+  final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
+  String _searchQuery = '';
+  bool _isSearching = false;
+  Timer? _debounce;
+
+  List<JellyfinPlaylist> _matchedPlaylists = [];
+  List<JellyfinTrack> _matchedTracks = [];
+  List<JellyfinAlbum> _matchedAlbums = [];
+  List<JellyfinArtist> _matchedArtists = [];
+  List<String> _matchedGenres = [];
 
   String _greeting() {
     final hour = DateTime.now().hour;
@@ -24,31 +44,142 @@ class LibraryScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    _searchFocusNode.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocusNode.dispose();
+    _debounce?.cancel();
+    super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    setState(() => _searchQuery = value);
+
+    if (value.trim().isEmpty) {
+      setState(() {
+        _isSearching = false;
+        _matchedPlaylists = [];
+        _matchedTracks = [];
+        _matchedAlbums = [];
+        _matchedArtists = [];
+        _matchedGenres = [];
+      });
+      return;
+    }
+
+    _debounce = Timer(const Duration(milliseconds: 300), () => _runSearch(value.trim()));
+  }
+
+  Future<void> _runSearch(String query) async {
+    final service = ref.read(jellyfinServiceProvider);
+    setState(() => _isSearching = true);
+
+    try {
+      final qLower = query.toLowerCase();
+      final allPlaylists = ref.read(playlistsProvider).valueOrNull ?? [];
+      final filteredPlaylists = allPlaylists
+          .where((p) => p.name.toLowerCase().contains(qLower))
+          .take(10)
+          .toList();
+
+      // Collect unique genres from the local track library
+      final allTracks = ref.read(tracksProvider).valueOrNull ?? [];
+      final genreSet = <String>{};
+      for (final t in allTracks) {
+        for (final g in t.genres) {
+          final clean = g.trim();
+          if (clean.isNotEmpty) genreSet.add(clean);
+        }
+      }
+      final filteredGenres = genreSet
+          .where((g) => g.toLowerCase().contains(qLower))
+          .take(3)
+          .toList()
+        ..sort();
+
+      List<JellyfinTrack> tracks = [];
+      List<JellyfinAlbum> albums = [];
+      List<JellyfinArtist> artists = [];
+
+      if (service != null) {
+        final results = await Future.wait([
+          service.searchTracks(query),
+          service.searchAlbums(query),
+          service.searchArtists(query),
+        ]);
+        tracks = (results[0] as List<JellyfinTrack>).take(10).toList();
+        albums = (results[1] as List<JellyfinAlbum>).take(10).toList();
+        artists = (results[2] as List<JellyfinArtist>).take(10).toList();
+      }
+
+      if (mounted) {
+        setState(() {
+          _isSearching = false;
+          _matchedPlaylists = filteredPlaylists;
+          _matchedTracks = tracks;
+          _matchedAlbums = albums;
+          _matchedArtists = artists;
+          _matchedGenres = filteredGenres;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isSearching = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final user = ref.watch(authProvider);
     final albumsAsync = ref.watch(homeAlbumsProvider);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: CustomScrollView(
-        slivers: [
-          // ── App Bar ─────────────────────────────────────────────────────────
-          SliverAppBar(
-            backgroundColor: AppColors.background,
-            floating: true,
-            pinned: false,
-            automaticallyImplyLeading: false,
-            toolbarHeight: 72,
-            title: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
+    final isSearching = _searchQuery.trim().isNotEmpty || _searchFocusNode.hasFocus;
+
+    return PopScope(
+      canPop: !isSearching,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (isSearching) {
+          setState(() {
+            _searchController.clear();
+            _searchQuery = '';
+            _isSearching = false;
+            _matchedPlaylists = [];
+            _matchedTracks = [];
+            _matchedAlbums = [];
+            _matchedArtists = [];
+            _matchedGenres = [];
+          });
+          _searchFocusNode.unfocus();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: CustomScrollView(
+          slivers: [
+            // ── App Bar & Evident Search Bar ─────────────────────────────────────
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
+                    const SizedBox(height: 52),
                     Text(
                       '${_greeting()},',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontSize: 13, color: AppColors.textSecondary),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(fontSize: 13, color: AppColors.textSecondary),
                     ),
                     const SizedBox(height: 2),
                     Text(
@@ -56,32 +187,187 @@ class LibraryScreen extends ConsumerWidget {
                       style: Theme.of(context)
                           .textTheme
                           .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.bold, fontSize: 20),
+                          ?.copyWith(fontWeight: FontWeight.bold, fontSize: 24),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceVariant,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: _searchQuery.isNotEmpty
+                              ? AppColors.primary
+                              : AppColors.glassBorder,
+                          width: _searchQuery.isNotEmpty ? 1.5 : 1,
+                        ),
+                      ),
+                      child: TextField(
+                        controller: _searchController,
+                        focusNode: _searchFocusNode,
+                        style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'Search songs, albums, artists, playlists...',
+                          hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
+                          prefixIcon: const Icon(Icons.search_rounded, color: AppColors.primary, size: 22),
+                          suffixIcon: _searchQuery.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear_rounded, color: AppColors.textMuted, size: 20),
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    _onQueryChanged('');
+                                  },
+                                )
+                              : null,
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        ),
+                        onChanged: _onQueryChanged,
+                      ),
                     ),
                   ],
                 ),
-                Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.search_rounded,
-                          color: AppColors.textPrimary),
-                      onPressed: () => context.go('/home/search'),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.settings_outlined,
-                          color: AppColors.textPrimary),
-                      onPressed: () => context.push('/settings'),
-                    ),
-                  ],
-                ),
-              ],
+              ),
+            ),
+
+            if (_searchQuery.trim().isNotEmpty)
+              ..._buildSearchSlivers()
+            else
+              ..._buildLibrarySlivers(context, albumsAsync),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildSearchSlivers() {
+    if (_isSearching) {
+      return [
+        const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 48),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: AppColors.primary),
+                  SizedBox(height: 16),
+                  Text('Searching library...', style: TextStyle(color: AppColors.textMuted)),
+                ],
+              ),
             ),
           ),
+        ),
+      ];
+    }
 
-          // ── Smart Mixes ─────────────────────────────────────────────────────────
-          SliverToBoxAdapter(
-            child: _sectionHeader(context, 'Smart Mixes'),
+    final hasResults = _matchedGenres.isNotEmpty ||
+        _matchedPlaylists.isNotEmpty ||
+        _matchedTracks.isNotEmpty ||
+        _matchedAlbums.isNotEmpty ||
+        _matchedArtists.isNotEmpty;
+
+    if (!hasResults) {
+      return [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.music_off_rounded, color: AppColors.textMuted, size: 56),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No results for "$_searchQuery"',
+                    style: const TextStyle(color: AppColors.textMuted, fontSize: 15),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
           ),
+        ),
+      ];
+    }
+
+    final slivers = <Widget>[];
+
+    // 0. Genre Mixes (max 3) — shown first
+    if (_matchedGenres.isNotEmpty) {
+      slivers.add(SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Genre Mixes'),
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) => _GenreSearchResultTile(genre: _matchedGenres[i]),
+          childCount: _matchedGenres.length,
+        ),
+      ));
+    }
+
+    // 1. Playlists (max 10)
+    if (_matchedPlaylists.isNotEmpty) {
+      slivers.add(SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Playlists (${_matchedPlaylists.length})'),
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) => _PlaylistResultTile(playlist: _matchedPlaylists[i]),
+          childCount: _matchedPlaylists.length,
+        ),
+      ));
+    }
+
+    // 2. Songs (max 10)
+    if (_matchedTracks.isNotEmpty) {
+      slivers.add(SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Songs (${_matchedTracks.length})'),
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) => TrackCard(track: _matchedTracks[i]),
+          childCount: _matchedTracks.length,
+        ),
+      ));
+    }
+
+    // 3. Albums (max 10)
+    if (_matchedAlbums.isNotEmpty) {
+      slivers.add(SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Albums (${_matchedAlbums.length})'),
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) => _AlbumResultTile(album: _matchedAlbums[i]),
+          childCount: _matchedAlbums.length,
+        ),
+      ));
+    }
+
+    // 4. Artists (max 10)
+    if (_matchedArtists.isNotEmpty) {
+      slivers.add(SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Artists (${_matchedArtists.length})'),
+      ));
+      slivers.add(SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, i) => _ArtistResultTile(artist: _matchedArtists[i]),
+          childCount: _matchedArtists.length,
+        ),
+      ));
+    }
+
+    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 100)));
+    return slivers;
+  }
+
+  List<Widget> _buildLibrarySlivers(
+      BuildContext context, AsyncValue<List<JellyfinAlbum>> albumsAsync) {
+    return [
+      // â”€â”€ Smart Mixes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      SliverToBoxAdapter(
+        child: _sectionHeader(context, 'Smart Mixes'),
+      ),
           SliverToBoxAdapter(
             child: SizedBox(
               height: 140,
@@ -127,27 +413,27 @@ class LibraryScreen extends ConsumerWidget {
 
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-          // ── Genre Mixes ─────────────────────────────────────────────────────────
-          const SliverToBoxAdapter(child: _GenreMixesSection()),
-
-          const SliverToBoxAdapter(child: SizedBox(height: 8)),
-
-          // ── Recently Played ─────────────────────────────────────────────────
+          // â”€â”€ Recently Played â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           const SliverToBoxAdapter(child: _RecentlyPlayedSection()),
 
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-          // ── News & Podcasts ─────────────────────────────────────────────────
+          // â”€â”€ Genre Mixes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+          const SliverToBoxAdapter(child: _GenreMixesSection()),
+
+          const SliverToBoxAdapter(child: SizedBox(height: 8)),
+
+          // â”€â”€ News & Podcasts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           const SliverToBoxAdapter(child: _NewsPodcastsSection()),
 
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-          // ── New For You ─────────────────────────────────────────────────────
+          // â”€â”€ New For You â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           const SliverToBoxAdapter(child: _NewForYouSection()),
 
           const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-          // ── Albums ──────────────────────────────────────────────────────────
+          // â”€â”€ Albums â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
@@ -209,9 +495,7 @@ class LibraryScreen extends ConsumerWidget {
           ),
 
           const SliverToBoxAdapter(child: SizedBox(height: 80)),
-        ],
-      ),
-    );
+    ];
   }
 
   Widget _sectionHeader(BuildContext context, String title, {Widget? action}) {
@@ -242,7 +526,7 @@ class LibraryScreen extends ConsumerWidget {
 }
 
 // ===========================================================================
-// Recently Played Section — prominent mixed-media grid
+// Recently Played Section â€” prominent mixed-media grid
 // ===========================================================================
 
 class _RecentlyPlayedSection extends ConsumerWidget {
@@ -401,7 +685,7 @@ class _EmptyRecentCard extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Recent card widget — now uses RecentlyPlayedItem directly
+// Recent card widget â€” now uses RecentlyPlayedItem directly
 // ---------------------------------------------------------------------------
 
 class _RecentCard extends StatelessWidget {
@@ -411,11 +695,15 @@ class _RecentCard extends StatelessWidget {
   const _RecentCard({required this.item, required this.service});
 
   Color get _typeColor {
+    if (item.type == RecentlyPlayedType.mix && item.colorValue != null) {
+      return Color(item.colorValue!);
+    }
     switch (item.type) {
       case RecentlyPlayedType.album: return AppColors.primary;
       case RecentlyPlayedType.artist: return const Color(0xFF06B6D4);
       case RecentlyPlayedType.playlist: return const Color(0xFFEC4899);
       case RecentlyPlayedType.track: return AppColors.primary;
+      case RecentlyPlayedType.mix: return const Color(0xFF8B5CF6);
     }
   }
 
@@ -425,6 +713,7 @@ class _RecentCard extends StatelessWidget {
       case RecentlyPlayedType.artist: return 'ARTIST';
       case RecentlyPlayedType.playlist: return 'PLAYLIST';
       case RecentlyPlayedType.track: return 'TRACK';
+      case RecentlyPlayedType.mix: return 'MIX';
     }
   }
 
@@ -434,6 +723,11 @@ class _RecentCard extends StatelessWidget {
       case RecentlyPlayedType.artist: return Icons.person_rounded;
       case RecentlyPlayedType.playlist: return Icons.queue_music_rounded;
       case RecentlyPlayedType.track: return Icons.music_note_rounded;
+      case RecentlyPlayedType.mix:
+        if (item.mixType == 'daily_drive') return Icons.directions_car_rounded;
+        if (item.mixType == 'heavy') return Icons.replay_rounded;
+        if (item.mixType == 'undiscovered') return Icons.explore_rounded;
+        return Icons.auto_awesome_rounded;
     }
   }
 
@@ -446,6 +740,11 @@ class _RecentCard extends StatelessWidget {
       case RecentlyPlayedType.playlist:
         context.push('/playlist/${item.id}'); break;
       case RecentlyPlayedType.track: break;
+      case RecentlyPlayedType.mix:
+        if (item.mixType != null) {
+          context.push('/smart-mix/${item.mixType}');
+        }
+        break;
     }
   }
 
@@ -516,10 +815,30 @@ class _RecentCard extends StatelessWidget {
     );
   }
 
-  Widget _placeholder() => Container(
-    color: AppColors.surfaceVariant,
-    child: Icon(_fallbackIcon, color: _typeColor.withValues(alpha: 0.7), size: 36),
-  );
+  Widget _placeholder() {
+    if (item.type == RecentlyPlayedType.mix && item.colorValue != null) {
+      final c1 = Color(item.colorValue!);
+      final c2 = item.secondaryColorValue != null
+          ? Color(item.secondaryColorValue!)
+          : c1.withValues(alpha: 0.7);
+      return Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [c1, c2],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Center(
+          child: Icon(_fallbackIcon, color: Colors.white.withValues(alpha: 0.9), size: 44),
+        ),
+      );
+    }
+    return Container(
+      color: AppColors.surfaceVariant,
+      child: Icon(_fallbackIcon, color: _typeColor.withValues(alpha: 0.7), size: 36),
+    );
+  }
 }
 
 // ===========================================================================
@@ -1228,7 +1547,7 @@ class _PodcastHomeCard extends StatelessWidget {
                                 ),
                               ),
                               Text(
-                                '  •  ${episode.duration.inMinutes} min',
+                                '  â€¢  ${episode.duration.inMinutes} min',
                                 style: TextStyle(
                                   color: Colors.white.withValues(alpha: 0.5),
                                   fontSize: 10,
@@ -1258,6 +1577,208 @@ class _PodcastHomeCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Search Result Tiles for Library Search
+// ---------------------------------------------------------------------------
+
+class _PlaylistResultTile extends ConsumerWidget {
+  final JellyfinPlaylist playlist;
+  const _PlaylistResultTile({required this.playlist});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final service = ref.watch(jellyfinServiceProvider);
+    final imageUrl = (service != null && playlist.imageTag != null)
+        ? service.getImageUrl(playlist.id, playlist.imageTag!)
+        : null;
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: imageUrl != null
+              ? CachedNetworkImage(
+                  imageUrl: imageUrl,
+                  fit: BoxFit.cover,
+                  errorWidget: (_, __, ___) => _ph(),
+                )
+              : _ph(),
+        ),
+      ),
+      title: Text(
+        playlist.name,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.w500,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        '${playlist.trackCount} tracks',
+        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+      onTap: () => context.push('/playlist/${playlist.id}'),
+    );
+  }
+
+  Widget _ph() => Container(
+        color: AppColors.surfaceVariant,
+        child: const Icon(Icons.queue_music_rounded, color: AppColors.textMuted),
+      );
+}
+
+class _AlbumResultTile extends ConsumerWidget {
+  final JellyfinAlbum album;
+  const _AlbumResultTile({required this.album});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final service = ref.watch(jellyfinServiceProvider);
+    final imageUrl = (service != null && album.imageTag != null)
+        ? service.getImageUrl(album.id, album.imageTag!)
+        : null;
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: imageUrl != null
+              ? CachedNetworkImage(
+                  imageUrl: imageUrl,
+                  fit: BoxFit.cover,
+                  errorWidget: (_, __, ___) => _ph(),
+                )
+              : _ph(),
+        ),
+      ),
+      title: Text(
+        album.name,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.w500,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        album.artist,
+        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+      onTap: () => context.push('/album/${album.id}'),
+    );
+  }
+
+  Widget _ph() => Container(
+        color: AppColors.surfaceVariant,
+        child: const Icon(Icons.album_rounded, color: AppColors.textMuted),
+      );
+}
+
+class _ArtistResultTile extends ConsumerWidget {
+  final JellyfinArtist artist;
+  const _ArtistResultTile({required this.artist});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final service = ref.watch(jellyfinServiceProvider);
+    final imageUrl = (service != null && artist.imageTag != null)
+        ? service.getImageUrl(artist.id, artist.imageTag!)
+        : null;
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: CircleAvatar(
+        radius: 24,
+        backgroundColor: AppColors.surfaceVariant,
+        backgroundImage: imageUrl != null ? NetworkImage(imageUrl) : null,
+        child: imageUrl == null
+            ? const Icon(Icons.person_rounded, color: AppColors.textMuted, size: 24)
+            : null,
+      ),
+      title: Text(
+        artist.name,
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.w500,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+      onTap: () => context.push('/artist/${artist.id}'),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Genre Search Result Tile — opens a SmartMixDetailScreen for the genre
+// ---------------------------------------------------------------------------
+
+class _GenreSearchResultTile extends ConsumerWidget {
+  final String genre;
+  const _GenreSearchResultTile({required this.genre});
+
+  static const _palette = [
+    [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+    [Color(0xFF10B981), Color(0xFF047857)],
+    [Color(0xFFF97316), Color(0xFFC2410C)],
+    [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+    [Color(0xFFEC4899), Color(0xFFBE185D)],
+    [Color(0xFF14B8A6), Color(0xFF0F766E)],
+    [Color(0xFFEAB308), Color(0xFFA16207)],
+    [Color(0xFF6366F1), Color(0xFF4338CA)],
+  ];
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = _palette[genre.hashCode.abs() % _palette.length];
+    final mixType = 'genre_${Uri.encodeComponent(genre)}';
+
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      leading: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: colors,
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Icon(Icons.music_note_rounded, color: Colors.white, size: 24),
+      ),
+      title: Text(
+        '$genre Mix',
+        style: const TextStyle(
+          color: AppColors.textPrimary,
+          fontWeight: FontWeight.w500,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: const Text(
+        'Genre Mix · Tap to play',
+        style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+      ),
+      trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.textMuted),
+      onTap: () => context.push('/smart-mix/$mixType'),
     );
   }
 }

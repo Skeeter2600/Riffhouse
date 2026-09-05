@@ -104,7 +104,13 @@ class _PodcastDetailScreenState extends ConsumerState<PodcastDetailScreen> {
 
         final episodesAsync = ref.watch(podcastEpisodesProvider(feed));
 
-        return Scaffold(
+        return PopScope(
+          canPop: context.canPop(),
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop) return;
+            context.go('/home/library');
+          },
+          child: Scaffold(
           backgroundColor: AppColors.background,
           body: CustomScrollView(
             slivers: [
@@ -117,7 +123,7 @@ class _PodcastDetailScreenState extends ConsumerState<PodcastDetailScreen> {
                 surfaceTintColor: Colors.transparent,
                 leading: IconButton(
                   icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
-                  onPressed: () => context.pop(),
+                  onPressed: () => context.canPop() ? context.pop() : context.go('/home/library'),
                 ),
                 actions: [
                   IconButton(
@@ -369,6 +375,7 @@ class _PodcastDetailScreenState extends ConsumerState<PodcastDetailScreen> {
               const SliverToBoxAdapter(child: SizedBox(height: 80)),
             ],
           ),
+        ),
         );
       },
     );

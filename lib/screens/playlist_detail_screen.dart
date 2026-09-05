@@ -7,6 +7,7 @@ import 'package:audio_service/audio_service.dart';
 import '../audio/queue_notifier.dart';
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
+import '../providers/download_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist_sheet.dart';
@@ -38,7 +39,13 @@ class PlaylistDetailScreen extends ConsumerWidget {
             ? service.getImageUrl(playlist.id, playlist.imageTag!)
             : null;
 
-        return Scaffold(
+        return PopScope(
+          canPop: context.canPop(),
+          onPopInvokedWithResult: (didPop, result) {
+            if (didPop) return;
+            context.go('/home/library');
+          },
+          child: Scaffold(
           backgroundColor: AppColors.background,
           floatingActionButton: FloatingActionButton.extended(
             onPressed: () => context.push('/playlist/$playlistId/add'),
@@ -62,10 +69,10 @@ class PlaylistDetailScreen extends ConsumerWidget {
                   backgroundColor: AppColors.background,
                   actions: [
                     IconButton(
-                      icon: const Icon(Icons.edit_outlined,
+                      icon: const Icon(Icons.more_horiz_rounded,
                           color: AppColors.textPrimary),
-                      onPressed: () => _showEditBottomSheet(context, ref, playlist),
-                      tooltip: 'Edit Playlist',
+                      onPressed: () => _showEditBottomSheet(context, ref, playlist, tracksAsync.valueOrNull ?? []),
+                      tooltip: 'Playlist Options',
                     ),
                   ],
                   flexibleSpace: FlexibleSpaceBar(
@@ -104,9 +111,36 @@ class PlaylistDetailScreen extends ConsumerWidget {
                         Text(playlist.name,
                             style: Theme.of(context).textTheme.headlineMedium),
                         const SizedBox(height: 4),
-                        Text(
-                          '${playlist.trackCount} tracks',
-                          style: Theme.of(context).textTheme.bodyMedium,
+                        Row(
+                          children: [
+                            Text(
+                              '${playlist.trackCount} tracks',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                            Builder(
+                              builder: (context) {
+                                final isDownloaded = ref.watch(downloadProvider)
+                                    .downloadedPlaylistIds
+                                    .contains(playlistId);
+                                if (!isDownloaded) return const SizedBox.shrink();
+                                return const Row(
+                                  children: [
+                                    SizedBox(width: 8),
+                                    Icon(Icons.download_done_rounded,
+                                        color: Color(0xFF10B981), size: 16),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Downloaded',
+                                      style: TextStyle(
+                                          color: Color(0xFF10B981),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         Row(
@@ -175,31 +209,6 @@ class PlaylistDetailScreen extends ConsumerWidget {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 12),
-                        OutlinedButton.icon(
-                          onPressed: () async {
-                            ref.invalidate(playlistsProvider);
-                            ref.invalidate(playlistTracksProvider(playlistId));
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Syncing playlist with server...'),
-                                duration: Duration(seconds: 1),
-                                backgroundColor: AppColors.primary,
-                              ),
-                            );
-                          },
-                          icon: const Icon(Icons.sync_rounded,
-                              color: AppColors.secondary),
-                          label: const Text('Sync to Server',
-                              style: TextStyle(color: AppColors.secondary)),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(44),
-                            side: const BorderSide(
-                                color: AppColors.secondary, width: 0.8),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                          ),
-                        ),
                       ],
                     ),
                   ),
@@ -237,114 +246,240 @@ class PlaylistDetailScreen extends ConsumerWidget {
               ],
             ),
           ),
+        ),
         );
       },
     );
   }
 
-  void _showEditBottomSheet(BuildContext context, WidgetRef ref, JellyfinPlaylist playlist) {
+  void _confirmRemoveDownloads(
+      BuildContext context, WidgetRef ref, String playlistId, String playlistName, List<JellyfinTrack> tracks) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Remove Downloads',
+            style: TextStyle(color: AppColors.textPrimary)),
+        content: Text(
+          'Remove downloaded tracks for "$playlistName" from device?',
+          style: const TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppColors.textSecondary)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () {
+              Navigator.pop(ctx);
+              ref
+                  .read(downloadProvider.notifier)
+                  .removePlaylistDownloads(playlistId, tracks);
+            },
+            child: const Text('Remove', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditBottomSheet(
+      BuildContext context, WidgetRef ref, JellyfinPlaylist playlist, List<JellyfinTrack> tracks) {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.card,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(top: 12, bottom: 16),
-              decoration: BoxDecoration(
-                color: AppColors.textMuted,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.image_outlined, color: AppColors.primary),
-              title: const Text('Change Cover Art',
-                  style: TextStyle(color: AppColors.textPrimary)),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final picker = ImagePicker();
-                final image = await picker.pickImage(source: ImageSource.gallery);
-                if (image != null) {
-                  final bytes = await image.readAsBytes();
-                  final mimeType = image.mimeType ?? 'image/jpeg';
-                  final playlistService = ref.read(playlistServiceProvider);
-                  
-                  if (!context.mounted) return;
-                  // Show loading SnackBar
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Uploading cover art...'), duration: Duration(seconds: 2)),
-                  );
-                  
-                  final success = await playlistService.uploadPlaylistImage(playlist.id, bytes, mimeType);
-                  if (!context.mounted) return;
-                  if (success) {
-                    ref.invalidate(playlistsProvider);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Cover art updated successfully!'), backgroundColor: AppColors.primary),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Failed to upload cover art'), backgroundColor: Colors.redAccent),
-                    );
-                  }
-                }
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-              title: const Text('Delete Playlist',
-                  style: TextStyle(color: AppColors.textPrimary)),
-              onTap: () async {
-                Navigator.pop(ctx);
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (dialogCtx) => AlertDialog(
-                    backgroundColor: AppColors.card,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                    title: const Text('Delete Playlist', style: TextStyle(color: AppColors.textPrimary)),
-                    content: Text('Are you sure you want to delete "${playlist.name}"? This action cannot be undone.', style: const TextStyle(color: AppColors.textSecondary)),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(dialogCtx, false),
-                        child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
-                      ),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(dialogCtx, true),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                        child: const Text('Delete', style: TextStyle(color: Colors.white)),
-                      ),
-                    ],
+      builder: (ctx) {
+        return Consumer(
+          builder: (sheetContext, sheetRef, _) {
+            final downloadState = sheetRef.watch(downloadProvider);
+            final isDownloaded = downloadState.downloadedPlaylistIds.contains(playlist.id);
+            final batchProgress = downloadState.batchProgress[playlist.id];
+            final isBatchDownloading = batchProgress != null;
+
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(top: 12, bottom: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.textMuted,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
-                );
-                
-                if (confirm == true) {
-                  final playlistService = ref.read(playlistServiceProvider);
-                  final success = await playlistService.deletePlaylist(playlist.id);
-                  if (!context.mounted) return;
-                  if (success) {
-                    ref.invalidate(playlistsProvider);
-                    context.pop(); // Pop playlist detail page
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Deleted playlist "${playlist.name}"'), backgroundColor: AppColors.primary),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Failed to delete playlist'), backgroundColor: Colors.redAccent),
-                    );
-                  }
-                }
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+
+                  // Download Toggle
+                  SwitchListTile(
+                    secondary: Icon(
+                      isDownloaded
+                          ? Icons.download_done_rounded
+                          : Icons.download_rounded,
+                      color: isDownloaded ? const Color(0xFF10B981) : AppColors.primary,
+                    ),
+                    title: const Text('Download for Offline',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                    subtitle: Text(
+                      isBatchDownloading
+                          ? 'Downloading ${batchProgress.current}/${batchProgress.total}...'
+                          : isDownloaded
+                              ? 'Downloaded & saved to device'
+                              : 'Keep songs downloaded on device',
+                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                    ),
+                    value: isDownloaded || isBatchDownloading,
+                    activeThumbColor: const Color(0xFF10B981),
+                    onChanged: isBatchDownloading
+                        ? null
+                        : (bool enable) async {
+                            Navigator.pop(ctx);
+                            if (enable) {
+                              await ref
+                                  .read(downloadProvider.notifier)
+                                  .downloadPlaylist(playlist.id, tracks);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Downloading "${playlist.name}"...'),
+                                    backgroundColor: AppColors.primary,
+                                  ),
+                                );
+                              }
+                            } else {
+                              _confirmRemoveDownloads(context, ref, playlist.id, playlist.name, tracks);
+                            }
+                          },
+                  ),
+
+                  // Smart Add
+                  ListTile(
+                    leading: const Icon(Icons.auto_awesome_rounded, color: AppColors.primaryLight),
+                    title: const Text('Smart Add Recommendations',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                    subtitle: const Text('Swipe to add recommended songs tailored to this playlist',
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      context.push('/playlist/${playlist.id}/smart-add');
+                    },
+                  ),
+
+                  // Sync Option
+                  ListTile(
+                    leading: const Icon(Icons.sync_rounded, color: AppColors.secondary),
+                    title: const Text('Sync with Server',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                    subtitle: const Text('Refresh playlist tracks from Jellyfin',
+                        style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      ref.invalidate(playlistsProvider);
+                      ref.invalidate(playlistTracksProvider(playlist.id));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Syncing playlist with server...'),
+                          duration: Duration(seconds: 1),
+                          backgroundColor: AppColors.primary,
+                        ),
+                      );
+                    },
+                  ),
+
+                  // Change Cover Art
+                  ListTile(
+                    leading: const Icon(Icons.image_outlined, color: AppColors.primary),
+                    title: const Text('Change Cover Art',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      final picker = ImagePicker();
+                      final image = await picker.pickImage(source: ImageSource.gallery);
+                      if (image != null) {
+                        final bytes = await image.readAsBytes();
+                        final mimeType = image.mimeType ?? 'image/jpeg';
+                        final playlistService = ref.read(playlistServiceProvider);
+
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Uploading cover art...'), duration: Duration(seconds: 2)),
+                        );
+
+                        final success = await playlistService.uploadPlaylistImage(playlist.id, bytes, mimeType);
+                        if (!context.mounted) return;
+                        if (success) {
+                          ref.invalidate(playlistsProvider);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Cover art updated successfully!'), backgroundColor: AppColors.primary),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Failed to upload cover art'), backgroundColor: Colors.redAccent),
+                          );
+                        }
+                      }
+                    },
+                  ),
+
+                  // Delete Playlist
+                  ListTile(
+                    leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                    title: const Text('Delete Playlist',
+                        style: TextStyle(color: AppColors.textPrimary)),
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (dialogCtx) => AlertDialog(
+                          backgroundColor: AppColors.card,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          title: const Text('Delete Playlist', style: TextStyle(color: AppColors.textPrimary)),
+                          content: Text('Are you sure you want to delete "${playlist.name}"? This action cannot be undone.', style: const TextStyle(color: AppColors.textSecondary)),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dialogCtx, false),
+                              child: const Text('Cancel', style: TextStyle(color: AppColors.textSecondary)),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(dialogCtx, true),
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                              child: const Text('Delete', style: TextStyle(color: Colors.white)),
+                            ),
+                          ],
+                        ),
+                      );
+
+                      if (confirm == true) {
+                        final playlistService = ref.read(playlistServiceProvider);
+                        final success = await playlistService.deletePlaylist(playlist.id);
+                        if (!context.mounted) return;
+                        if (success) {
+                          ref.invalidate(playlistsProvider);
+                          context.pop();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Deleted playlist "${playlist.name}"'), backgroundColor: AppColors.primary),
+                          );
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Failed to delete playlist'), backgroundColor: Colors.redAccent),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -412,6 +547,11 @@ class _TrackItem extends ConsumerWidget {
         ? service.getImageUrl(track.id, track.imageTag!)
         : null;
 
+    final cachedTracks = ref.watch(cachedTracksProvider).valueOrNull ?? [];
+    final isCached = cachedTracks.any((c) => c.jellyfinId == track.id);
+    final downloadState = ref.watch(downloadProvider);
+    final isDownloading = downloadState.activeDownloadingIds.contains(track.id);
+
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       leading: ClipRRect(
@@ -433,15 +573,34 @@ class _TrackItem extends ConsumerWidget {
               color: AppColors.textPrimary, fontWeight: FontWeight.w500),
           maxLines: 1,
           overflow: TextOverflow.ellipsis),
-      subtitle: Text(track.artists.join(', '),
-          style: const TextStyle(
-              color: AppColors.textSecondary, fontSize: 12),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis),
+      subtitle: Row(
+        children: [
+          if (isDownloading) ...[
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.8, color: AppColors.primary),
+            ),
+            const SizedBox(width: 5),
+          ] else if (isCached) ...[
+            const Icon(Icons.download_done_rounded, color: Color(0xFF10B981), size: 14),
+            const SizedBox(width: 5),
+          ],
+          Expanded(
+            child: Text(
+              track.artists.join(', '),
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
       trailing: IconButton(
         icon: const Icon(Icons.more_vert_rounded,
             color: AppColors.textMuted, size: 20),
-        onPressed: () => _showContextMenu(context, ref),
+        onPressed: () => _showContextMenu(context, ref, isCached),
       ),
       onTap: () {
         ref.read(recentSelectionsProvider.notifier).addSelection(playlistId, 'playlist');
@@ -454,11 +613,11 @@ class _TrackItem extends ConsumerWidget {
             );
         context.push('/player');
       },
-      onLongPress: () => _showContextMenu(context, ref),
+      onLongPress: () => _showContextMenu(context, ref, isCached),
     );
   }
 
-  void _showContextMenu(BuildContext context, WidgetRef ref) {
+  void _showContextMenu(BuildContext context, WidgetRef ref, bool isCached) {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.card,
@@ -477,6 +636,33 @@ class _TrackItem extends ConsumerWidget {
                 color: AppColors.textMuted,
                 borderRadius: BorderRadius.circular(2),
               ),
+            ),
+            ListTile(
+              leading: Icon(
+                isCached ? Icons.delete_outline_rounded : Icons.download_rounded,
+                color: isCached ? Colors.redAccent : AppColors.primary,
+              ),
+              title: Text(
+                isCached ? 'Remove from Downloads' : 'Download Track',
+                style: const TextStyle(color: AppColors.textPrimary),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                if (isCached) {
+                  ref.read(downloadProvider.notifier).removeDownloadedTrack(track.id);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Removed "${track.name}" from downloads')),
+                  );
+                } else {
+                  ref.read(downloadProvider.notifier).downloadSingleTrack(track);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Downloading "${track.name}"...'),
+                      backgroundColor: AppColors.primary,
+                    ),
+                  );
+                }
+              },
             ),
             if (track.albumId.isNotEmpty)
               ListTile(
@@ -506,7 +692,7 @@ class _TrackItem extends ConsumerWidget {
                 if (artistObj != null) {
                   context.push('/artist/${artistObj.id}');
                 } else {
-                  context.push('/home/search');
+                  context.go('/home/library');
                 }
               },
             ),

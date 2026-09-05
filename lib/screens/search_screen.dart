@@ -90,36 +90,47 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (context.canPop()) {
+          context.pop();
+        } else {
+          context.go('/home/library');
+        }
+      },
+      child: Scaffold(
         backgroundColor: AppColors.background,
-        automaticallyImplyLeading: false,
-        title: TextField(
-          controller: _controller,
-          autofocus: true,
-          style: const TextStyle(color: AppColors.textPrimary),
-          decoration: InputDecoration(
-            hintText: 'Search tracks, albums, artists...',
-            hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            prefixIcon: const Icon(Icons.search_rounded, color: AppColors.textMuted),
-            suffixIcon: _query.isNotEmpty
-                ? IconButton(
-                    icon: const Icon(Icons.clear, color: AppColors.textMuted),
-                    onPressed: () {
-                      _controller.clear();
-                      _onQueryChanged('');
-                    },
-                  )
-                : null,
+        appBar: AppBar(
+          backgroundColor: AppColors.background,
+          automaticallyImplyLeading: false,
+          title: TextField(
+            controller: _controller,
+            autofocus: true,
+            style: const TextStyle(color: AppColors.textPrimary),
+            decoration: InputDecoration(
+              hintText: 'Search tracks, albums, artists...',
+              hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              prefixIcon: const Icon(Icons.search_rounded, color: AppColors.textMuted),
+              suffixIcon: _query.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, color: AppColors.textMuted),
+                      onPressed: () {
+                        _controller.clear();
+                        _onQueryChanged('');
+                      },
+                    )
+                  : null,
+            ),
+            onChanged: _onQueryChanged,
           ),
-          onChanged: _onQueryChanged,
         ),
+        body: _buildBody(),
       ),
-      body: _buildBody(),
     );
   }
 

@@ -9,11 +9,25 @@ import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 
-class PlaylistsScreen extends ConsumerWidget {
+class PlaylistsScreen extends ConsumerStatefulWidget {
   const PlaylistsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PlaylistsScreen> createState() => _PlaylistsScreenState();
+}
+
+class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
+  final _searchController = TextEditingController();
+  String _filterQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final playlistsAsync = ref.watch(playlistsProvider);
 
     return Scaffold(
@@ -32,22 +46,94 @@ class PlaylistsScreen extends ConsumerWidget {
         error: (e, _) => Center(
             child: Text('Error: $e',
                 style: const TextStyle(color: AppColors.textMuted))),
-        data: (playlists) => playlists.isEmpty
-            ? _emptyState(context)
-            : GridView.builder(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                gridDelegate:
-                    const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  childAspectRatio: 0.8,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
+        data: (playlists) {
+          if (playlists.isEmpty) return _emptyState(context);
+
+          final q = _filterQuery.trim().toLowerCase();
+          final filtered = q.isEmpty
+              ? playlists
+              : playlists
+                  .where((p) => p.name.toLowerCase().contains(q))
+                  .toList();
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceVariant,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: _filterQuery.isNotEmpty
+                          ? AppColors.primary
+                          : AppColors.glassBorder,
+                      width: _filterQuery.isNotEmpty ? 1.5 : 1,
+                    ),
+                  ),
+                  child: TextField(
+                    controller: _searchController,
+                    style: const TextStyle(
+                        color: AppColors.textPrimary, fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: 'Filter playlists...',
+                      hintStyle: const TextStyle(
+                          color: AppColors.textMuted, fontSize: 14),
+                      prefixIcon: const Icon(Icons.search_rounded,
+                          color: AppColors.primary, size: 22),
+                      suffixIcon: _filterQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear_rounded,
+                                  color: AppColors.textMuted, size: 20),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _filterQuery = '');
+                              },
+                            )
+                          : null,
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 14),
+                    ),
+                    onChanged: (v) => setState(() => _filterQuery = v),
+                  ),
                 ),
-                itemCount: playlists.length,
-                itemBuilder: (ctx, i) =>
-                    _PlaylistCard(playlist: playlists[i]),
               ),
+              Expanded(
+                child: filtered.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.search_off_rounded,
+                                color: AppColors.textMuted, size: 56),
+                            const SizedBox(height: 12),
+                            Text(
+                              'No playlists matching "$_filterQuery"',
+                              style: const TextStyle(
+                                  color: AppColors.textMuted, fontSize: 15),
+                            ),
+                          ],
+                        ),
+                      )
+                    : GridView.builder(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 0.8,
+                          mainAxisSpacing: 16,
+                          crossAxisSpacing: 16,
+                        ),
+                        itemCount: filtered.length,
+                        itemBuilder: (ctx, i) =>
+                            _PlaylistCard(playlist: filtered[i]),
+                      ),
+              ),
+            ],
+          );
+        },
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showCreateDialog(context, ref),

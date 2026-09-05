@@ -10,13 +10,14 @@ import '../screens/login_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/playlist_detail_screen.dart';
 import '../screens/playlist_add_tracks_screen.dart';
+import '../screens/playlist_smart_add_screen.dart';
 import '../screens/playlists_screen.dart';
 import '../screens/podcasts_screen.dart';
 import '../screens/podcast_detail_screen.dart';
-import '../screens/search_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/smart_mix_detail_screen.dart';
 import '../screens/daily_mix_config_screen.dart';
+import '../screens/downloads_screen.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
@@ -55,47 +56,58 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     // Keep Android Auto synced with background library data updates
     ref.watch(androidAutoSyncProvider);
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: widget.navigationShell,
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const MiniPlayer(),
-          NavigationBar(
-            selectedIndex: widget.navigationShell.currentIndex,
-            onDestinationSelected: (index) {
-              widget.navigationShell.goBranch(
-                index,
-                initialLocation: index == widget.navigationShell.currentIndex,
-              );
-            },
-            backgroundColor: AppColors.surface,
-            surfaceTintColor: Colors.transparent,
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.library_music_outlined),
-                selectedIcon: Icon(Icons.library_music),
-                label: 'Library',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.search_outlined),
-                selectedIcon: Icon(Icons.search),
-                label: 'Search',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.queue_music_outlined),
-                selectedIcon: Icon(Icons.queue_music),
-                label: 'Playlists',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.podcasts_outlined),
-                selectedIcon: Icon(Icons.podcasts),
-                label: 'Podcasts',
-              ),
-            ],
-          ),
-        ],
+    final currentIndex = widget.navigationShell.currentIndex;
+
+    return PopScope(
+      canPop: currentIndex == 0,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (currentIndex != 0) {
+          widget.navigationShell.goBranch(0);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: widget.navigationShell,
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const MiniPlayer(),
+            NavigationBar(
+              selectedIndex: widget.navigationShell.currentIndex,
+              onDestinationSelected: (index) {
+                widget.navigationShell.goBranch(
+                  index,
+                  initialLocation: index == widget.navigationShell.currentIndex,
+                );
+              },
+              backgroundColor: AppColors.surface,
+              surfaceTintColor: Colors.transparent,
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.library_music_outlined),
+                  selectedIcon: Icon(Icons.library_music),
+                  label: 'Library',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.queue_music_outlined),
+                  selectedIcon: Icon(Icons.queue_music),
+                  label: 'Playlists',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.podcasts_outlined),
+                  selectedIcon: Icon(Icons.podcasts),
+                  label: 'Podcasts',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.settings_outlined),
+                  selectedIcon: Icon(Icons.settings),
+                  label: 'Settings',
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -142,14 +154,6 @@ final routerProvider = Provider<GoRouter>((ref) {
           StatefulShellBranch(
             routes: [
               GoRoute(
-                path: '/home/search',
-                builder: (context, state) => const SearchScreen(),
-              ),
-            ],
-          ),
-          StatefulShellBranch(
-            routes: [
-              GoRoute(
                 path: '/home/playlists',
                 builder: (context, state) => const PlaylistsScreen(),
               ),
@@ -163,7 +167,27 @@ final routerProvider = Provider<GoRouter>((ref) {
               ),
             ],
           ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/home/settings',
+                builder: (context, state) => const SettingsScreen(),
+              ),
+            ],
+          ),
         ],
+      ),
+      GoRoute(
+        path: '/home/search',
+        redirect: (context, state) => '/home/library',
+      ),
+      GoRoute(
+        path: '/home/downloads',
+        builder: (context, state) => const DownloadsScreen(),
+      ),
+      GoRoute(
+        path: '/downloads',
+        builder: (context, state) => const DownloadsScreen(),
       ),
       GoRoute(
         path: '/player',
@@ -196,6 +220,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/playlist/:playlistId/add',
         builder: (context, state) => PlaylistAddTracksScreen(
+          playlistId: state.pathParameters['playlistId']!,
+        ),
+      ),
+      GoRoute(
+        path: '/playlist/:playlistId/smart-add',
+        builder: (context, state) => PlaylistSmartAddScreen(
           playlistId: state.pathParameters['playlistId']!,
         ),
       ),

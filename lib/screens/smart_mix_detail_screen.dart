@@ -149,6 +149,14 @@ class SmartMixDetailScreen extends ConsumerWidget {
                               label: 'Play All',
                               primary: true,
                               onTap: () {
+                                ref.read(recentSelectionsProvider.notifier).addSelection(
+                                  mixType,
+                                  'mix',
+                                  title: title,
+                                  mixType: mixType,
+                                  colorValue: colors.first.toARGB32(),
+                                  secondaryColorValue: colors.length > 1 ? colors[1].toARGB32() : null,
+                                );
                                 ref.read(queueNotifierProvider.notifier).playQueue(
                                   tracks,
                                   0,
@@ -167,6 +175,14 @@ class SmartMixDetailScreen extends ConsumerWidget {
                               label: 'Shuffle',
                               primary: false,
                               onTap: () {
+                                ref.read(recentSelectionsProvider.notifier).addSelection(
+                                  mixType,
+                                  'mix',
+                                  title: title,
+                                  mixType: mixType,
+                                  colorValue: colors.first.toARGB32(),
+                                  secondaryColorValue: colors.length > 1 ? colors[1].toARGB32() : null,
+                                );
                                 final s = [...tracks]..shuffle();
                                 ref.read(queueNotifierProvider.notifier).playQueue(
                                   s,
@@ -228,7 +244,21 @@ class SmartMixDetailScreen extends ConsumerWidget {
 
                     return InkWell(
                       onTap: () {
-                        ref.read(queueNotifierProvider.notifier).playQueue(tracks, i);
+                        ref.read(recentSelectionsProvider.notifier).addSelection(
+                          mixType,
+                          'mix',
+                          title: title,
+                          mixType: mixType,
+                          colorValue: colors.first.toARGB32(),
+                          secondaryColorValue: colors.length > 1 ? colors[1].toARGB32() : null,
+                        );
+                        ref.read(queueNotifierProvider.notifier).playQueue(
+                          tracks,
+                          i,
+                          fromType: 'smart_mix',
+                          fromId: mixType,
+                          fromTitle: title,
+                        );
                         context.push('/player');
                       },
                       child: Padding(

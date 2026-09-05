@@ -1,12 +1,13 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
+import '../providers/download_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
-import '../widgets/playlist_recommendations_widget.dart';
 
 class PlaylistAddTracksScreen extends ConsumerStatefulWidget {
   final String playlistId;
@@ -60,7 +61,7 @@ class _PlaylistAddTracksScreenState
         leading: const BackButton(color: AppColors.textPrimary),
         title: TextField(
           controller: _controller,
-          autofocus: true,
+          autofocus: false,
           style: const TextStyle(color: AppColors.textPrimary),
           decoration: const InputDecoration(
             hintText: 'Search tracks to add...',
@@ -81,43 +82,92 @@ class _PlaylistAddTracksScreenState
         ],
       ),
       body: q.isEmpty
-          ? SingleChildScrollView(
-              child: Column(
-                children: [
-                  PlaylistRecommendationsWidget(
-                    playlistId: widget.playlistId,
-                    currentTracks: playlistTracks,
-                  ),
-                  const SizedBox(height: 24),
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (isLoading) ...[
-                          const SizedBox(
-                            width: 36, height: 36,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2.5, color: AppColors.primary),
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            AppColors.primary.withValues(alpha: 0.25),
+                            AppColors.accent.withValues(alpha: 0.15),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: AppColors.primary.withValues(alpha: 0.4),
+                          width: 1,
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.auto_awesome_rounded,
+                              color: AppColors.primaryLight, size: 40),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'Smart Add Recommendations',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Discover similar tracks tuned to your playlist taste. Swipe to accept or pass.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 13,
+                            ),
                           ),
                           const SizedBox(height: 16),
-                          const Text('Loading your library...',
-                              style: TextStyle(
-                                  color: AppColors.textMuted, fontSize: 15)),
-                        ] else ...[
-                          const Icon(Icons.search_rounded,
-                              color: AppColors.textMuted, size: 40),
-                          const SizedBox(height: 12),
-                          Text(
-                            'Or search ${allTracks.length} tracks above to add',
-                            style: const TextStyle(
-                                color: AppColors.textMuted, fontSize: 14),
+                          ElevatedButton.icon(
+                            onPressed: () => context.push(
+                                '/playlist/${widget.playlistId}/smart-add'),
+                            icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+                            label: const Text('Open Smart Add'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                            ),
                           ),
                         ],
-                      ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 48),
-                ],
+                    const SizedBox(height: 36),
+                    if (isLoading) ...[
+                      const SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.5, color: AppColors.primary),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Loading your library...',
+                          style: TextStyle(
+                              color: AppColors.textMuted, fontSize: 14)),
+                    ] else ...[
+                      const Icon(Icons.search_rounded,
+                          color: AppColors.textMuted, size: 36),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Search ${allTracks.length} tracks above to add manually',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 13),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             )
           : isLoading
@@ -208,6 +258,9 @@ class _PlaylistAddTracksScreenState
                                   ref.invalidate(playlistTracksProvider(
                                       widget.playlistId));
                                   ref.invalidate(playlistsProvider);
+                                  ref
+                                      .read(downloadProvider.notifier)
+                                      .onTrackAddedToPlaylist(widget.playlistId, track);
                                 } else {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
@@ -221,6 +274,31 @@ class _PlaylistAddTracksScreenState
                     );
                   },
                 ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: SizedBox(
+            height: 48,
+            child: ElevatedButton.icon(
+              onPressed: () => context.push('/playlist/${widget.playlistId}/smart-add'),
+              icon: const Icon(Icons.auto_awesome_rounded, color: AppColors.primaryLight, size: 20),
+              label: const Text(
+                'Open Smart Add (Recommendations)',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.surfaceVariant,
+                foregroundColor: AppColors.textPrimary,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(color: AppColors.primary.withValues(alpha: 0.4)),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 

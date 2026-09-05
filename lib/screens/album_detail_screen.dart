@@ -304,6 +304,7 @@ class _TrackRow extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return InkWell(
       onTap: () {
+        ref.read(recentSelectionsProvider.notifier).addSelection(track.albumId, 'album');
         ref.read(queueNotifierProvider.notifier).playQueue(
           queue,
           queueIndex,

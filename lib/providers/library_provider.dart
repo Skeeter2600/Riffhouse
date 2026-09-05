@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drift/drift.dart';
@@ -523,6 +524,11 @@ class RecentlyPlayedItem {
   final String? imageTag;
   final RecentlyPlayedType type;
   final DateTime lastPlayedAt;
+  /// For [RecentlyPlayedType.mix] items — the mixType string used to navigate
+  /// to SmartMixDetailScreen (e.g. 'daily', 'genre_Rock').
+  final String? mixType;
+  final int? colorValue;
+  final int? secondaryColorValue;
 
   const RecentlyPlayedItem({
     required this.id,
@@ -531,33 +537,77 @@ class RecentlyPlayedItem {
     this.imageTag,
     required this.type,
     required this.lastPlayedAt,
+    this.mixType,
+    this.colorValue,
+    this.secondaryColorValue,
   });
 }
 
-enum RecentlyPlayedType { track, album, artist, playlist }
+enum RecentlyPlayedType { track, album, artist, playlist, mix }
+
+/// Helper to get fallback gradient colors for mix types
+List<Color> getMixPalette(String mixType) {
+  if (mixType.startsWith('genre_')) {
+    final genre = Uri.decodeComponent(mixType.replaceFirst('genre_', ''));
+    const palettes = [
+      [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
+      [Color(0xFF10B981), Color(0xFF047857)],
+      [Color(0xFFF97316), Color(0xFFC2410C)],
+      [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
+      [Color(0xFFEC4899), Color(0xFFBE185D)],
+      [Color(0xFF14B8A6), Color(0xFF0F766E)],
+      [Color(0xFFEAB308), Color(0xFFA16207)],
+      [Color(0xFF6366F1), Color(0xFF4338CA)],
+    ];
+    return palettes[genre.hashCode.abs() % palettes.length];
+  }
+  if (mixType == 'daily') return const [Color(0xFF7C3AED), Color(0xFF4F46E5)];
+  if (mixType == 'heavy') return const [Color(0xFFEC4899), Color(0xFFBE185D)];
+  if (mixType == 'undiscovered') return const [Color(0xFF06B6D4), Color(0xFF0369A1)];
+  if (mixType == 'daily_drive') return const [Color(0xFFF59E0B), Color(0xFFD97706)];
+  return const [Color(0xFF8B5CF6), Color(0xFF7C3AED)];
+}
 
 /// Model for a recorded selection in history
 class RecentSelection {
   final String id;
-  final String type; // 'album', 'artist', 'playlist'
+  final String type; // 'album', 'artist', 'playlist', 'mix'
   final DateTime timestamp;
+  /// Stored title for 'mix' entries (no server lookup needed).
+  final String? title;
+  /// The mixType used to navigate to SmartMixDetailScreen for 'mix' entries.
+  final String? mixType;
+  final int? colorValue;
+  final int? secondaryColorValue;
 
   RecentSelection({
     required this.id,
     required this.type,
     required this.timestamp,
+    this.title,
+    this.mixType,
+    this.colorValue,
+    this.secondaryColorValue,
   });
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'type': type,
         'timestamp': timestamp.millisecondsSinceEpoch,
+        if (title != null) 'title': title,
+        if (mixType != null) 'mixType': mixType,
+        if (colorValue != null) 'colorValue': colorValue,
+        if (secondaryColorValue != null) 'secondaryColorValue': secondaryColorValue,
       };
 
   factory RecentSelection.fromJson(Map<String, dynamic> json) => RecentSelection(
         id: json['id'] as String,
         type: json['type'] as String,
         timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp'] as int),
+        title: json['title'] as String?,
+        mixType: json['mixType'] as String?,
+        colorValue: json['colorValue'] as int?,
+        secondaryColorValue: json['secondaryColorValue'] as int?,
       );
 }
 
@@ -577,16 +627,27 @@ class RecentSelectionsNotifier extends StateNotifier<List<RecentSelection>> {
     } catch (_) {}
   }
 
-  Future<void> addSelection(String id, String type) async {
+  Future<void> addSelection(
+    String id,
+    String type, {
+    String? title,
+    String? mixType,
+    int? colorValue,
+    int? secondaryColorValue,
+  }) async {
     // Remove if already exists (to move it to top)
     final filtered = state.where((item) => !(item.id == id && item.type == type)).toList();
-    
+
     final newItem = RecentSelection(
       id: id,
       type: type,
       timestamp: DateTime.now(),
+      title: title,
+      mixType: mixType,
+      colorValue: colorValue,
+      secondaryColorValue: secondaryColorValue,
     );
-    
+
     final newState = [newItem, ...filtered].take(20).toList();
     state = newState;
 
@@ -615,36 +676,56 @@ final recentlyPlayedProvider = FutureProvider<List<RecentlyPlayedItem>>((ref) as
   final List<RecentlyPlayedItem> items = [];
 
   for (final sel in selections) {
-    if (sel.type == 'album') {
-      final album = albums.firstWhere((a) => a.id == sel.id, orElse: () => null as dynamic);
-      items.add(RecentlyPlayedItem(
-        id: album.id,
-        title: album.name,
-        subtitle: album.artist,
-        imageTag: album.imageTag,
-        type: RecentlyPlayedType.album,
-        lastPlayedAt: sel.timestamp,
-      ));
-    } else if (sel.type == 'artist') {
-      final artist = artists.firstWhere((a) => a.id == sel.id, orElse: () => null as dynamic);
-      items.add(RecentlyPlayedItem(
-        id: artist.id,
-        title: artist.name,
-        subtitle: 'Artist',
-        imageTag: artist.imageTag,
-        type: RecentlyPlayedType.artist,
-        lastPlayedAt: sel.timestamp,
-      ));
-    } else if (sel.type == 'playlist') {
-      final playlist = playlists.firstWhere((p) => p.id == sel.id, orElse: () => null as dynamic);
-      items.add(RecentlyPlayedItem(
-        id: playlist.id,
-        title: playlist.name,
-        subtitle: '${playlist.trackCount} tracks',
-        imageTag: playlist.imageTag,
-        type: RecentlyPlayedType.playlist,
-        lastPlayedAt: sel.timestamp,
-      ));
+    try {
+      if (sel.type == 'album') {
+        final album = albums.firstWhere((a) => a.id == sel.id);
+        items.add(RecentlyPlayedItem(
+          id: album.id,
+          title: album.name,
+          subtitle: album.artist,
+          imageTag: album.imageTag,
+          type: RecentlyPlayedType.album,
+          lastPlayedAt: sel.timestamp,
+        ));
+      } else if (sel.type == 'artist') {
+        final artist = artists.firstWhere((a) => a.id == sel.id);
+        items.add(RecentlyPlayedItem(
+          id: artist.id,
+          title: artist.name,
+          subtitle: 'Artist',
+          imageTag: artist.imageTag,
+          type: RecentlyPlayedType.artist,
+          lastPlayedAt: sel.timestamp,
+        ));
+      } else if (sel.type == 'playlist') {
+        final playlist = playlists.firstWhere((p) => p.id == sel.id);
+        items.add(RecentlyPlayedItem(
+          id: playlist.id,
+          title: playlist.name,
+          subtitle: '${playlist.trackCount} tracks',
+          imageTag: playlist.imageTag,
+          type: RecentlyPlayedType.playlist,
+          lastPlayedAt: sel.timestamp,
+        ));
+      } else if (sel.type == 'mix' && sel.mixType != null && sel.title != null) {
+        // Mix items store title & mixType directly — no server lookup needed.
+        final palette = sel.colorValue != null
+            ? null
+            : getMixPalette(sel.mixType!);
+        items.add(RecentlyPlayedItem(
+          id: sel.mixType!,
+          title: sel.title!,
+          subtitle: 'Mix',
+          imageTag: null,
+          type: RecentlyPlayedType.mix,
+          lastPlayedAt: sel.timestamp,
+          mixType: sel.mixType,
+          colorValue: sel.colorValue ?? palette?[0].toARGB32(),
+          secondaryColorValue: sel.secondaryColorValue ?? palette?[1].toARGB32(),
+        ));
+      }
+    } catch (_) {
+      // Item not found in current library — skip it.
     }
   }
 
