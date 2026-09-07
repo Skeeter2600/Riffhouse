@@ -98,7 +98,7 @@ All releases are available on the [GitHub Releases](https://github.com/Skeeter26
 
 ### iOS Sideloading
 
-Since Riffhouse isn't on the App Store, you'll use your Apple ID to sideload it. Two methods:
+Since Riffhouse isn't on the App Store, you'll use your Apple ID to sideload it. I am working on getting this (and adding Apple CarPlay support as well), but need further testing with it. For the time being, to just use it, there are two methods:
 
 #### Method A: Sideloadly (Recommended for Beginners)
 1. Download `Riffhouse.ipa` and install [Sideloadly](https://sideloadly.io/)
@@ -227,59 +227,6 @@ lib/
 ├── theme/          # Theming, colors, typography
 └── widgets/        # Reusable components (MiniPlayer, AlbumCard, etc.)
 ```
-
----
-
-## Troubleshooting
-
-### Connection Issues
-
-**Q: "Failed to connect to server"**
-- ✓ Double-check your Jellyfin URL (include `http://` or `https://`)
-- ✓ Ensure your Jellyfin server is running and reachable from your device
-- ✓ Try connecting from your device's browser first to test connectivity
-- ✓ If using a custom port, include it: `https://jellyfin.example.com:8096`
-
-**Q: "Authentication failed"**
-- ✓ Verify your Jellyfin username and password are correct
-- ✓ Check if your Jellyfin user has music library permissions
-- ✓ Try logging out and in again (Settings → Logout)
-
-### Playback Issues
-
-**Q: Audio stutters or has gaps**
-- ✓ Reduce audio quality in Settings (Music → Audio Quality)
-- ✓ Close other apps using audio
-- ✓ On mobile, ensure Wi-Fi or 4G+ connectivity
-- ✓ Update to the latest Riffhouse release
-
-**Q: Android Auto not appearing**
-- ✓ Ensure Android 5.0+
-- ✓ Use Android Auto version 6.0+
-- ✓ Restart your car's infotainment system
-- ✓ Check Riffhouse appears in Android Auto settings
-
-### Cache & Storage
-
-**Q: "Storage full" error**
-- ✓ Clear cached tracks in Settings → Storage → Clear Cache
-- ✓ Reduce your Cache Limit in Settings
-- ✓ Delete albums you no longer need offline
-
-**Q: Offline tracks disappeared**
-- ✓ Riffhouse doesn't auto-delete cached tracks; check device storage
-- ✓ If you uninstalled and reinstalled, cached data is cleared
-
-### iOS Sideloading
-
-**Q: "Untrusted Developer" warning**
-- ✓ Go to Settings → General → VPN & Device Management
-- ✓ Tap your Apple ID and select **Trust**
-
-**Q: App crashes on launch**
-- ✓ Ensure iOS 14+
-- ✓ Re-sideload with Sideloadly or AltStore
-- ✓ Check that Developer Mode is enabled (iOS 16+)
 
 ---
 
