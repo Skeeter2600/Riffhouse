@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/jellyfin_service.dart';
+
 import '../screens/album_detail_screen.dart';
 import '../screens/artist_detail_screen.dart';
 import '../screens/library_screen.dart';
@@ -36,19 +38,41 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
+  bool _initialRefreshDone = false;
+
   @override
   void initState() {
     super.initState();
-    // Eagerly warm the library cache so search is instant when the user opens
-    // it. We fire this after the first frame so the build is not blocked.
+    // Defer the initial library refresh until the JellyfinService is actually
+    // available. Calling refresh() while service == null sets state to
+    // AsyncData([]) and wipes out whatever the local DB cache had, making
+    // all songs/playlists disappear until the next manual pull-to-refresh.
+    //
+    // We check once after the first frame. If service is already ready we
+    // refresh immediately. If not, the listen() in build() will pick it up
+    // on the first non-null emission from jellyfinServiceProvider.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Preload library data in background (running asynchronously).
-      // This warms the cache for Library, Playlists, and Smart Mixes.
-      ref.read(tracksProvider);
-      ref.read(albumsProvider);
-      ref.read(artistsProvider);
-      ref.read(playlistsProvider);
+      _tryInitialRefresh();
     });
+  }
+
+  void _tryInitialRefresh() {
+    if (_initialRefreshDone) {
+      debugPrint('[ShellScaffold._tryInitialRefresh] Already done, skipping');
+      return;
+    }
+    final service = ref.read(jellyfinServiceProvider);
+    debugPrint('[ShellScaffold._tryInitialRefresh] service=${service != null ? "READY" : "NULL"}');
+    if (service == null) {
+      debugPrint('[ShellScaffold._tryInitialRefresh] service null → waiting for listener');
+      return; // build()'s listen will trigger this later
+    }
+    _initialRefreshDone = true;
+    debugPrint('[ShellScaffold._tryInitialRefresh] Triggering refresh for all providers');
+    ref.read(playlistsProvider.notifier).refresh();
+    ref.read(albumsProvider.notifier).refresh();
+    ref.read(artistsProvider.notifier).refresh();
+    ref.read(tracksProvider.notifier).refresh();
   }
 
   @override
@@ -56,7 +80,18 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
     // Keep Android Auto synced with background library data updates
     ref.watch(androidAutoSyncProvider);
 
+    // Trigger the initial library refresh the moment the Jellyfin service
+    // becomes available (i.e. after the async session restore completes).
+    // This is a no-op if _tryInitialRefresh() already ran in initState.
+    ref.listen<JellyfinService?>(jellyfinServiceProvider, (previous, next) {
+      debugPrint('[ShellScaffold.listen] jellyfinServiceProvider changed: ${previous != null ? "was READY" : "was NULL"} → ${next != null ? "now READY" : "now NULL"}');
+      if (previous == null && next != null) {
+        _tryInitialRefresh();
+      }
+    });
+
     final currentIndex = widget.navigationShell.currentIndex;
+
 
     return PopScope(
       canPop: currentIndex == 0,

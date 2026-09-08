@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../models/jellyfin_models.dart';
+
 
 /// Wraps the Jellyfin REST API.
 ///
@@ -115,6 +117,28 @@ class JellyfinService {
     }
   }
 
+  /// Verifies that the stored access token is still valid by making a cheap
+  /// request to the server. Returns `true` if authenticated, `false` on 401
+  /// or any network error. Used on startup to detect stale/expired tokens.
+  Future<bool> verifySession() async {
+    try {
+      debugPrint('[JellyfinService.verifySession] Pinging server for userId=$userId');
+      final response = await _dio.get(
+        'Users/$userId',
+        options: Options(headers: _headers),
+      );
+      final ok = response.statusCode == 200;
+      debugPrint('[JellyfinService.verifySession] statusCode=${response.statusCode} → ${ok ? "VALID" : "INVALID"}');
+      return ok;
+    } on DioException catch (e) {
+      debugPrint('[JellyfinService.verifySession] DioException: statusCode=${e.response?.statusCode} → session INVALID');
+      return false;
+    } catch (e) {
+      debugPrint('[JellyfinService.verifySession] Error: $e → treating as invalid');
+      return false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Tracks
   // ---------------------------------------------------------------------------
@@ -127,6 +151,7 @@ class JellyfinService {
     int startIndex = 0;
     int? totalCount;
 
+    debugPrint('[JellyfinService.getTracks] Starting fetch. baseUrl=${_dio.options.baseUrl}, userId=$userId');
     try {
       do {
         final response = await _dio.get(
@@ -143,6 +168,7 @@ class JellyfinService {
 
         totalCount ??= (response.data?['TotalRecordCount'] as int?) ?? 0;
         final items = (response.data?['Items'] as List?) ?? [];
+        debugPrint('[JellyfinService.getTracks] Page startIndex=$startIndex: got ${items.length} items, totalCount=$totalCount, statusCode=${response.statusCode}');
         allTracks.addAll(
           items.map((i) => JellyfinTrack.fromJson(i as Map<String, dynamic>)),
         );
@@ -150,8 +176,10 @@ class JellyfinService {
         if (items.isEmpty) break;
       } while (startIndex < totalCount);
 
+      debugPrint('[JellyfinService.getTracks] Done. Total tracks fetched: ${allTracks.length}');
       return allTracks;
-    } on DioException catch (_) {
+    } on DioException catch (e) {
+      debugPrint('[JellyfinService.getTracks] DioException: ${e.type} ${e.message}, statusCode=${e.response?.statusCode}, data=${e.response?.data}');
       return allTracks; // return whatever we got before the error
     }
   }
@@ -332,9 +360,44 @@ class JellyfinService {
       );
 
       final items = (response.data?['Items'] as List?) ?? [];
-      return items
+      final directList = items
           .map((i) => JellyfinPlaylist.fromJson(i as Map<String, dynamic>))
           .toList();
+
+      if (directList.isNotEmpty) return directList;
+
+      // Fallback: If recursive search returns empty, check for virtual 'Playlists' UserView
+      try {
+        final viewsResp = await _dio.get(
+          'Users/$userId/Views',
+          options: Options(headers: _headers),
+        );
+        final views = (viewsResp.data?['Items'] as List?) ?? [];
+        for (final v in views) {
+          final cType = (v['CollectionType'] as String?)?.toLowerCase();
+          final name = (v['Name'] as String?)?.toLowerCase();
+          if (cType == 'playlists' || name == 'playlists') {
+            final folderId = v['Id'] as String?;
+            if (folderId != null) {
+              final folderResp = await _dio.get(
+                'Users/$userId/Items',
+                queryParameters: {
+                  'ParentId': folderId,
+                  'Fields': 'ChildCount',
+                },
+                options: Options(headers: _headers),
+              );
+              final folderItems = (folderResp.data?['Items'] as List?) ?? [];
+              final folderList = folderItems
+                  .map((i) => JellyfinPlaylist.fromJson(i as Map<String, dynamic>))
+                  .toList();
+              if (folderList.isNotEmpty) return folderList;
+            }
+          }
+        }
+      } catch (_) {}
+
+      return directList;
     } on DioException catch (_) {
       return [];
     }

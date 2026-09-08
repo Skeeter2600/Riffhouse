@@ -36,6 +36,11 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
         title: const Text('Your Playlists'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Refresh Playlists',
+            onPressed: () => ref.read(playlistsProvider.notifier).refresh(),
+          ),
+          IconButton(
             icon: const Icon(Icons.add_rounded),
             onPressed: () => _showCreateDialog(context, ref),
           ),
@@ -43,11 +48,32 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
       ),
       body: playlistsAsync.when(
         loading: () => _buildShimmer(),
-        error: (e, _) => Center(
-            child: Text('Error: $e',
-                style: const TextStyle(color: AppColors.textMuted))),
+        error: (e, _) => RefreshIndicator(
+          onRefresh: () => ref.read(playlistsProvider.notifier).refresh(),
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              SizedBox(height: MediaQuery.of(context).size.height * 0.3),
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Error loading playlists: $e',
+                        style: const TextStyle(color: AppColors.textMuted)),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: const Text('Retry'),
+                      onPressed: () => ref.read(playlistsProvider.notifier).refresh(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
         data: (playlists) {
-          if (playlists.isEmpty) return _emptyState(context);
+          if (playlists.isEmpty) return _emptyState(context, ref);
 
           final q = _filterQuery.trim().toLowerCase();
           final filtered = q.isEmpty
@@ -56,82 +82,92 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
                   .where((p) => p.name.toLowerCase().contains(q))
                   .toList();
 
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceVariant,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                      color: _filterQuery.isNotEmpty
-                          ? AppColors.primary
-                          : AppColors.glassBorder,
-                      width: _filterQuery.isNotEmpty ? 1.5 : 1,
+          return RefreshIndicator(
+            onRefresh: () => ref.read(playlistsProvider.notifier).refresh(),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceVariant,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: _filterQuery.isNotEmpty
+                            ? AppColors.primary
+                            : AppColors.glassBorder,
+                        width: _filterQuery.isNotEmpty ? 1.5 : 1,
+                      ),
                     ),
-                  ),
-                  child: TextField(
-                    controller: _searchController,
-                    style: const TextStyle(
-                        color: AppColors.textPrimary, fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: 'Filter playlists...',
-                      hintStyle: const TextStyle(
-                          color: AppColors.textMuted, fontSize: 14),
-                      prefixIcon: const Icon(Icons.search_rounded,
-                          color: AppColors.primary, size: 22),
-                      suffixIcon: _filterQuery.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear_rounded,
-                                  color: AppColors.textMuted, size: 20),
-                              onPressed: () {
-                                _searchController.clear();
-                                setState(() => _filterQuery = '');
-                              },
-                            )
-                          : null,
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 14),
+                    child: TextField(
+                      controller: _searchController,
+                      style: const TextStyle(
+                          color: AppColors.textPrimary, fontSize: 14),
+                      decoration: InputDecoration(
+                        hintText: 'Filter playlists...',
+                        hintStyle: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 14),
+                        prefixIcon: const Icon(Icons.search_rounded,
+                            color: AppColors.primary, size: 22),
+                        suffixIcon: _filterQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear_rounded,
+                                    color: AppColors.textMuted, size: 20),
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() => _filterQuery = '');
+                                },
+                              )
+                            : null,
+                        border: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                      ),
+                      onChanged: (v) => setState(() => _filterQuery = v),
                     ),
-                    onChanged: (v) => setState(() => _filterQuery = v),
                   ),
                 ),
-              ),
-              Expanded(
-                child: filtered.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
+                Expanded(
+                  child: filtered.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
                           children: [
-                            const Icon(Icons.search_off_rounded,
-                                color: AppColors.textMuted, size: 56),
-                            const SizedBox(height: 12),
-                            Text(
-                              'No playlists matching "$_filterQuery"',
-                              style: const TextStyle(
-                                  color: AppColors.textMuted, fontSize: 15),
+                            SizedBox(height: MediaQuery.of(context).size.height * 0.2),
+                            Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.search_off_rounded,
+                                      color: AppColors.textMuted, size: 56),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'No playlists matching "$_filterQuery"',
+                                    style: const TextStyle(
+                                        color: AppColors.textMuted, fontSize: 15),
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
+                        )
+                      : GridView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            childAspectRatio: 0.8,
+                            mainAxisSpacing: 16,
+                            crossAxisSpacing: 16,
+                          ),
+                          itemCount: filtered.length,
+                          itemBuilder: (ctx, i) =>
+                              _PlaylistCard(playlist: filtered[i]),
                         ),
-                      )
-                    : GridView.builder(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          childAspectRatio: 0.8,
-                          mainAxisSpacing: 16,
-                          crossAxisSpacing: 16,
-                        ),
-                        itemCount: filtered.length,
-                        itemBuilder: (ctx, i) =>
-                            _PlaylistCard(playlist: filtered[i]),
-                      ),
-              ),
-            ],
+                ),
+              ],
+            ),
           );
         },
       ),
@@ -167,19 +203,34 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
     );
   }
 
-  Widget _emptyState(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+  Widget _emptyState(BuildContext context, WidgetRef ref) {
+    return RefreshIndicator(
+      onRefresh: () => ref.read(playlistsProvider.notifier).refresh(),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          const Icon(Icons.queue_music_outlined,
-              color: AppColors.textMuted, size: 64),
-          const SizedBox(height: 16),
-          Text('No playlists yet',
-              style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 8),
-          const Text('Create your first playlist',
-              style: TextStyle(color: AppColors.textMuted)),
+          SizedBox(height: MediaQuery.of(context).size.height * 0.25),
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.queue_music_outlined,
+                    color: AppColors.textMuted, size: 64),
+                const SizedBox(height: 16),
+                Text('No playlists yet',
+                    style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 8),
+                const Text('Create your first playlist or pull down to refresh',
+                    style: TextStyle(color: AppColors.textMuted)),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('Refresh Playlists'),
+                  onPressed: () => ref.read(playlistsProvider.notifier).refresh(),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

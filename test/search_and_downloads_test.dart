@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile_music_player/models/jellyfin_models.dart';
+import 'package:mobile_music_player/providers/auth_provider.dart';
 import 'package:mobile_music_player/providers/download_provider.dart';
 import 'package:mobile_music_player/providers/library_provider.dart';
+import 'package:mobile_music_player/services/jellyfin_service.dart';
 import 'package:mobile_music_player/theme/app_theme.dart';
 
 void main() {
@@ -148,6 +151,46 @@ void main() {
       expect(restored.secondaryColorValue, equals(0xFFC2410C));
       expect(restored.timestamp, equals(DateTime(2026, 9, 5, 10, 0)));
     });
+
+    test('Smart mixes (daily, daily_drive, heavy, undiscovered) are excluded from recently played', () {
+      expect(isExcludedRecentlyPlayedMix(mixType: 'daily'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(mixType: 'daily_drive'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(mixType: 'heavy'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(mixType: 'undiscovered'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(title: 'Daily Mix'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(title: 'Daily Drive'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(title: 'Heavy Rotation'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(title: 'Undiscovered'), isTrue);
+      expect(isExcludedRecentlyPlayedMix(id: 'daily'), isTrue);
+
+      // Genre mixes and regular albums/tracks must NOT be excluded
+      expect(isExcludedRecentlyPlayedMix(mixType: 'genre_Rock'), isFalse);
+      expect(isExcludedRecentlyPlayedMix(mixType: 'genre_Country', title: 'Country Mix'), isFalse);
+      expect(isExcludedRecentlyPlayedMix(mixType: 'genre_Pop'), isFalse);
+      expect(isExcludedRecentlyPlayedMix(mixType: null, id: 'alb_1', title: 'Album 1'), isFalse);
+    });
+
+    test('jellyfinServiceProvider re-evaluates and notifies listeners when authProvider updates', () {
+      final container = ProviderContainer(
+        overrides: [
+          authProvider.overrideWith((ref) => _FakeAuthNotifier()),
+        ],
+      );
+
+      // Initially not logged in
+      expect(container.read(jellyfinServiceProvider), isNull);
+
+      // Log in / restore session
+      final fakeNotifier = container.read(authProvider.notifier) as _FakeAuthNotifier;
+      final fakeService = JellyfinService(serverUrl: 'http://test', accessToken: 'token123', userId: 'user1');
+      fakeNotifier.setUser(
+        const JellyfinUser(id: 'user1', name: 'User', accessToken: 'token123', isAdmin: false),
+        fakeService,
+      );
+
+      // jellyfinServiceProvider must now resolve to fakeService
+      expect(container.read(jellyfinServiceProvider), equals(fakeService));
+    });
   });
 
   group('Back Navigation Logic Tests', () {
@@ -204,4 +247,22 @@ void main() {
     });
   });
 }
+
+class _FakeAuthNotifier extends StateNotifier<JellyfinUser?> implements AuthNotifier {
+  _FakeAuthNotifier() : super(null);
+
+  JellyfinService? _service;
+
+  @override
+  JellyfinService? get jellyfinService => _service;
+
+  void setUser(JellyfinUser user, JellyfinService service) {
+    _service = service;
+    state = user;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 

@@ -164,8 +164,18 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
       },
       child: Scaffold(
         backgroundColor: AppColors.background,
-        body: CustomScrollView(
-          slivers: [
+        body: RefreshIndicator(
+          onRefresh: () async {
+            await Future.wait([
+              ref.read(albumsProvider.notifier).refresh(),
+              ref.read(playlistsProvider.notifier).refresh(),
+              ref.read(artistsProvider.notifier).refresh(),
+              ref.read(tracksProvider.notifier).refresh(),
+            ]);
+          },
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
             // ── App Bar & Evident Search Bar ─────────────────────────────────────
             SliverToBoxAdapter(
               child: Padding(
@@ -234,6 +244,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             else
               ..._buildLibrarySlivers(context, albumsAsync),
           ],
+        ),
         ),
       ),
     );

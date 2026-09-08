@@ -68,18 +68,24 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
   Future<List<JellyfinTrack>> build() async {
     final db = ref.watch(databaseProvider);
     final service = ref.watch(jellyfinServiceProvider);
-    if (service == null) return [];
+    debugPrint('[TracksNotifier.build] service=${service != null ? "READY (userId=${service.userId})" : "NULL"}');
+    if (service == null) {
+      debugPrint('[TracksNotifier.build] service is null → returning []');
+      return [];
+    }
 
     // Eagerly load from database
     final localTracks = await db.getAllLocalTracks();
     final cachedTracks = localTracks.map(localTrackToJellyfin).toList();
+    debugPrint('[TracksNotifier.build] DB cache has ${cachedTracks.length} tracks');
 
     if (cachedTracks.isEmpty) {
-      // Database is empty! This is the first sync.
-      // We should perform a sync and return the results directly so the provider is in a loading state.
+      // Database is empty — first sync.
+      debugPrint('[TracksNotifier.build] DB empty → starting _syncInitial');
       return _syncInitial(db, service);
     } else {
       // Schedule background sync
+      debugPrint('[TracksNotifier.build] Returning ${cachedTracks.length} cached tracks, scheduling background sync');
       _syncBackground(db, service);
       return cachedTracks;
     }
@@ -87,11 +93,15 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
 
   Future<List<JellyfinTrack>> _syncInitial(AppDatabase db, JellyfinService service) async {
     try {
+      debugPrint('[TracksNotifier._syncInitial] Fetching all tracks from server...');
       final remoteTracks = await service.getTracks();
+      debugPrint('[TracksNotifier._syncInitial] Got ${remoteTracks.length} tracks from server');
       final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
       await db.bulkInsertLocalTracks(companions);
+      debugPrint('[TracksNotifier._syncInitial] Saved ${remoteTracks.length} tracks to DB');
       return remoteTracks;
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[TracksNotifier._syncInitial] ERROR: $e\n$st');
       return [];
     }
   }
@@ -102,6 +112,7 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       int startIndex = 0;
       final newTracks = <JellyfinTrack>[];
       bool foundExisting = false;
+      debugPrint('[TracksNotifier._syncBackground] Starting background sync...');
 
       while (!foundExisting) {
         final page = await service.getTracksPaged(
@@ -126,31 +137,65 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
         startIndex += page.length;
       }
 
+      debugPrint('[TracksNotifier._syncBackground] Found ${newTracks.length} new tracks');
       if (newTracks.isNotEmpty) {
         final companions = newTracks.map(jellyfinTrackToCompanion).toList();
         await db.bulkInsertLocalTracks(companions);
 
         // Reload all tracks and update state
         final updatedLocal = await db.getAllLocalTracks();
+        debugPrint('[TracksNotifier._syncBackground] Updated state with ${updatedLocal.length} total tracks');
         state = AsyncData(updatedLocal.map(localTrackToJellyfin).toList());
       }
-    } catch (_) {
-      // Ignore background sync errors
+    } catch (e, st) {
+      debugPrint('[TracksNotifier._syncBackground] ERROR: $e\n$st');
     }
   }
 
   Future<void> refresh() async {
+    final service = ref.read(jellyfinServiceProvider);
+    final db = ref.read(databaseProvider);
+    debugPrint('[TracksNotifier.refresh] Called. service=${service != null ? "READY" : "NULL"}');
+
+    // If the service is not available yet, do NOT wipe the state. Just load
+    // from the local database so existing cached songs remain visible.
+    if (service == null) {
+      final localTracks = await db.getAllLocalTracks();
+      debugPrint('[TracksNotifier.refresh] service null → DB has ${localTracks.length} tracks, keeping state');
+      if (localTracks.isNotEmpty) {
+        state = AsyncData(localTracks.map(localTrackToJellyfin).toList());
+      }
+      return;
+    }
+
+    debugPrint('[TracksNotifier.refresh] Fetching from server (serverUrl=${service.serverUrl}, userId=${service.userId})...');
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final service = ref.read(jellyfinServiceProvider);
-      final db = ref.read(databaseProvider);
-      if (service == null) return [];
-
       final remoteTracks = await service.getTracks();
+      debugPrint('[TracksNotifier.refresh] Got ${remoteTracks.length} tracks from server');
+
+      // If the server returned nothing and the DB is also empty, this is most
+      // likely a 401 / auth failure. getTracks() silently returns [] on DioException,
+      // so we verify the session and logout if the token is bad.
+      if (remoteTracks.isEmpty) {
+        final localTracks = await db.getAllLocalTracks();
+        if (localTracks.isNotEmpty) {
+          debugPrint('[TracksNotifier.refresh] Server returned 0 tracks but DB has ${localTracks.length} — checking session validity');
+        }
+        final sessionValid = await service.verifySession();
+        if (!sessionValid) {
+          debugPrint('[TracksNotifier.refresh] Session invalid (401) — triggering logout401');
+          ref.read(authProvider.notifier).logout401();
+          // Return existing DB cache so UI doesn't flash empty before redirect
+          final cached = await db.getAllLocalTracks();
+          return cached.map(localTrackToJellyfin).toList();
+        }
+      }
 
       // Perform database reconciliation
       final remoteIds = remoteTracks.map((t) => t.id).toSet();
       final localTracks = await db.getAllLocalTracks();
+      debugPrint('[TracksNotifier.refresh] DB has ${localTracks.length} local tracks before reconciliation');
 
       // Delete any tracks that are no longer on the server
       for (final local in localTracks) {
@@ -162,6 +207,7 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
       // Upsert all fetched tracks
       final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
       await db.bulkInsertLocalTracks(companions);
+      debugPrint('[TracksNotifier.refresh] Upserted ${companions.length} tracks to DB');
 
       return remoteTracks;
     });
@@ -185,12 +231,11 @@ class AlbumsNotifier extends AsyncNotifier<List<JellyfinAlbum>> {
   }
 
   Future<void> refresh() async {
+    final service = ref.read(jellyfinServiceProvider);
+    // Do not wipe state if service is not yet available.
+    if (service == null) return;
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
-      final service = ref.read(jellyfinServiceProvider);
-      if (service == null) return [];
-      return service.getAlbums();
-    });
+    state = await AsyncValue.guard(() => service.getAlbums());
   }
 }
 
@@ -211,12 +256,11 @@ class ArtistsNotifier extends AsyncNotifier<List<JellyfinArtist>> {
   }
 
   Future<void> refresh() async {
+    final service = ref.read(jellyfinServiceProvider);
+    // Do not wipe state if service is not yet available.
+    if (service == null) return;
     state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
-      final service = ref.read(jellyfinServiceProvider);
-      if (service == null) return [];
-      return service.getArtists();
-    });
+    state = await AsyncValue.guard(() => service.getArtists());
   }
 }
 
@@ -232,16 +276,93 @@ class PlaylistsNotifier extends AsyncNotifier<List<JellyfinPlaylist>> {
   @override
   Future<List<JellyfinPlaylist>> build() async {
     final service = ref.watch(jellyfinServiceProvider);
-    if (service == null) return [];
-    return service.getPlaylists();
+    final db = ref.watch(databaseProvider);
+
+    if (service == null) {
+      final local = await db.getAllLocalPlaylists();
+      return local.map((lp) {
+        int count = 0;
+        try {
+          final List<dynamic> ids = jsonDecode(lp.trackIdsJson);
+          count = ids.length;
+        } catch (_) {}
+        return JellyfinPlaylist(
+          id: lp.jellyfinId,
+          name: lp.name,
+          trackCount: count,
+        );
+      }).toList();
+    }
+
+    try {
+      final remote = await service.getPlaylists();
+      if (remote.isNotEmpty) {
+        for (final p in remote) {
+          final existing = await db.getLocalPlaylist(p.id);
+          await db.upsertLocalPlaylist(LocalPlaylistsCompanion(
+            id: existing != null ? Value(existing.id) : const Value.absent(),
+            jellyfinId: Value(p.id),
+            name: Value(p.name),
+            trackIdsJson: existing != null ? Value(existing.trackIdsJson) : const Value('[]'),
+            lastSyncedAt: Value(DateTime.now()),
+          ));
+        }
+        return remote;
+      }
+    } catch (_) {}
+
+    // Fallback to local database if remote query returned empty/failed
+    final local = await db.getAllLocalPlaylists();
+    if (local.isNotEmpty) {
+      return local.map((lp) {
+        int count = 0;
+        try {
+          final List<dynamic> ids = jsonDecode(lp.trackIdsJson);
+          count = ids.length;
+        } catch (_) {}
+        return JellyfinPlaylist(
+          id: lp.jellyfinId,
+          name: lp.name,
+          trackCount: count,
+        );
+      }).toList();
+    }
+    return [];
   }
 
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
       final service = ref.read(jellyfinServiceProvider);
-      if (service == null) return [];
-      return service.getPlaylists();
+      final db = ref.read(databaseProvider);
+      if (service == null) {
+        final local = await db.getAllLocalPlaylists();
+        return local.map((lp) {
+          int count = 0;
+          try {
+            final List<dynamic> ids = jsonDecode(lp.trackIdsJson);
+            count = ids.length;
+          } catch (_) {}
+          return JellyfinPlaylist(
+            id: lp.jellyfinId,
+            name: lp.name,
+            trackCount: count,
+          );
+        }).toList();
+      }
+
+      final remote = await service.getPlaylists();
+      for (final p in remote) {
+        final existing = await db.getLocalPlaylist(p.id);
+        await db.upsertLocalPlaylist(LocalPlaylistsCompanion(
+          id: existing != null ? Value(existing.id) : const Value.absent(),
+          jellyfinId: Value(p.id),
+          name: Value(p.name),
+          trackIdsJson: existing != null ? Value(existing.trackIdsJson) : const Value('[]'),
+          lastSyncedAt: Value(DateTime.now()),
+        ));
+      }
+      return remote;
     });
   }
 }
@@ -545,6 +666,32 @@ class RecentlyPlayedItem {
 
 enum RecentlyPlayedType { track, album, artist, playlist, mix }
 
+/// Mix types that must not appear in the Recently Played section
+/// because they already have prominent dedicated cards on the home screen.
+const kExcludedRecentlyPlayedMixTypes = {
+  'daily',
+  'daily_drive',
+  'heavy',
+  'undiscovered',
+};
+
+/// Returns true if the mix should be excluded from Recently Played.
+bool isExcludedRecentlyPlayedMix({String? mixType, String? id, String? title}) {
+  if (mixType != null && kExcludedRecentlyPlayedMixTypes.contains(mixType.toLowerCase())) {
+    return true;
+  }
+  if (id != null && kExcludedRecentlyPlayedMixTypes.contains(id.toLowerCase())) {
+    return true;
+  }
+  if (title != null) {
+    final t = title.toLowerCase().trim();
+    if (t == 'daily mix' || t == 'daily drive' || t == 'heavy rotation' || t == 'undiscovered') {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Helper to get fallback gradient colors for mix types
 List<Color> getMixPalette(String mixType) {
   if (mixType.startsWith('genre_')) {
@@ -622,7 +769,16 @@ class RecentSelectionsNotifier extends StateNotifier<List<RecentSelection>> {
       final jsonStr = prefs.getString('recent_selections');
       if (jsonStr != null) {
         final List<dynamic> list = jsonDecode(jsonStr);
-        state = list.map((item) => RecentSelection.fromJson(item)).toList();
+        final loaded = list
+            .map((item) => RecentSelection.fromJson(item))
+            .where((item) => !(item.type == 'mix' &&
+                isExcludedRecentlyPlayedMix(
+                  mixType: item.mixType,
+                  id: item.id,
+                  title: item.title,
+                )))
+            .toList();
+        state = loaded;
       }
     } catch (_) {}
   }
@@ -635,6 +791,17 @@ class RecentSelectionsNotifier extends StateNotifier<List<RecentSelection>> {
     int? colorValue,
     int? secondaryColorValue,
   }) async {
+    // Smart mixes of daily mix, daily drive, heavy rotation, and undiscovered
+    // should not appear in the recently played section.
+    if (type == 'mix' &&
+        isExcludedRecentlyPlayedMix(
+          mixType: mixType,
+          id: id,
+          title: title,
+        )) {
+      return;
+    }
+
     // Remove if already exists (to move it to top)
     final filtered = state.where((item) => !(item.id == id && item.type == type)).toList();
 
@@ -708,6 +875,13 @@ final recentlyPlayedProvider = FutureProvider<List<RecentlyPlayedItem>>((ref) as
           lastPlayedAt: sel.timestamp,
         ));
       } else if (sel.type == 'mix' && sel.mixType != null && sel.title != null) {
+        if (isExcludedRecentlyPlayedMix(
+          mixType: sel.mixType,
+          id: sel.id,
+          title: sel.title,
+        )) {
+          continue;
+        }
         // Mix items store title & mixType directly — no server lookup needed.
         final palette = sel.colorValue != null
             ? null
