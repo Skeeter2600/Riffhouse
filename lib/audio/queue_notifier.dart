@@ -205,16 +205,22 @@ class QueueNotifier extends StateNotifier<QueueState> {
   // ---------------------------------------------------------------------------
 
   /// Replaces the queue with [tracks] and begins playback at [startIndex].
+  ///
+  /// With [shuffle], the handler picks the order (and the first track) and
+  /// [startIndex] is ignored. Shuffle only applies to this play.
   Future<void> playQueue(
     List<JellyfinTrack> tracks,
     int startIndex, {
     String? fromType,
     String? fromId,
     String? fromTitle,
+    bool shuffle = false,
   }) async {
+    // When shuffling, the order is decided by the handler and arrives through
+    // its queue stream, so no optimistic track list is set here.
     state = state.copyWith(
-      tracks: List<JellyfinTrack>.from(tracks),
-      currentIndex: startIndex,
+      tracks: shuffle ? null : List<JellyfinTrack>.from(tracks),
+      currentIndex: shuffle ? 0 : startIndex,
       isLoading: true,
       sourceType: fromType,
       sourceId: fromId,
@@ -226,6 +232,7 @@ class QueueNotifier extends StateNotifier<QueueState> {
       fromType: fromType,
       fromId: fromId,
       fromTitle: fromTitle,
+      shuffle: shuffle,
     );
   }
 

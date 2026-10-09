@@ -183,13 +183,13 @@ class SmartMixDetailScreen extends ConsumerWidget {
                               primary: false,
                               onTap: () {
                                 _recordSelection(ref, title, colors);
-                                final s = [...tracks]..shuffle();
                                 ref.read(queueNotifierProvider.notifier).playQueue(
-                                  s,
+                                  tracks,
                                   0,
                                   fromType: 'smart_mix',
                                   fromId: mixType,
                                   fromTitle: title,
+                                  shuffle: true,
                                 );
                                 context.push('/player');
                               },

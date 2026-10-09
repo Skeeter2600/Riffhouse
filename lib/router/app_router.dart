@@ -21,8 +21,10 @@ import '../screens/smart_mix_detail_screen.dart';
 import '../screens/daily_mix_config_screen.dart';
 import '../screens/downloads_screen.dart';
 import '../providers/library_provider.dart';
+import '../providers/update_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/update_dialog.dart';
 
 // ---------------------------------------------------------------------------
 // Shell scaffold
@@ -88,6 +90,13 @@ class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
       if (previous == null && next != null) {
         _tryInitialRefresh();
       }
+    });
+
+    // Watching the update provider here starts the launch-time update check;
+    // each new prompt (update found, or notes after updating) opens a dialog.
+    ref.listen<int>(updateProvider.select((s) => s.promptSeq), (previous, next) {
+      final prompt = ref.read(updateProvider).prompt;
+      if (prompt != null && mounted) showUpdateDialog(context, prompt);
     });
 
     final currentIndex = widget.navigationShell.currentIndex;

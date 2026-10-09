@@ -3,12 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 
+import '../audio/queue_notifier.dart';
 import '../services/url_launcher_service.dart';
 
 import '../providers/auth_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/library_provider.dart';
+import '../providers/update_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/update_dialog.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -17,6 +20,8 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authProvider);
     final service = ref.watch(jellyfinServiceProvider);
+    final audioHandler = ref.watch(audioHandlerProvider);
+    final updateState = ref.watch(updateProvider);
 
     return PopScope(
       canPop: context.canPop(),
@@ -56,16 +61,16 @@ class SettingsScreen extends ConsumerWidget {
           _ToggleTile(
             icon: Icons.music_note_rounded,
             title: 'Gapless Playback',
-            subtitle: 'Seamless transitions between tracks',
-            value: true,
-            onChanged: (_) {},
+            subtitle: 'Pre-load the next track so songs follow on without a pause',
+            value: audioHandler.gaplessEnabled,
+            onChanged: audioHandler.setGaplessEnabled,
           ),
           _ToggleTile(
             icon: Icons.blur_on_rounded,
             title: 'Crossfade',
-            subtitle: 'Fade between tracks (2 s)',
-            value: false,
-            onChanged: (_) {},
+            subtitle: 'Blend the end of each song into the next (2 s)',
+            value: audioHandler.crossfadeEnabled,
+            onChanged: audioHandler.setCrossfadeEnabled,
           ),
 
           const SizedBox(height: 8),
@@ -105,12 +110,30 @@ class SettingsScreen extends ConsumerWidget {
 
           const SizedBox(height: 8),
 
+          // ---- Updates ----
+          const _SectionHeader(title: 'Updates'),
+          _ToggleTile(
+            icon: Icons.system_update_rounded,
+            title: 'Automatic Updates',
+            subtitle: 'Check on launch and download new releases',
+            value: updateState.autoUpdateEnabled,
+            onChanged: ref.read(updateProvider.notifier).setAutoUpdateEnabled,
+          ),
+          _SettingsTile(
+            icon: Icons.refresh_rounded,
+            title: 'Check for Updates',
+            subtitle: _updateStatusText(updateState),
+            onTap: () => _checkForUpdates(context, ref),
+          ),
+
+          const SizedBox(height: 8),
+
           // ---- About ----
           const _SectionHeader(title: 'About'),
-          const _SettingsTile(
+          _SettingsTile(
             icon: Icons.info_outline_rounded,
             title: 'Version',
-            subtitle: '1.0.0 (build 1)',
+            subtitle: updateState.currentVersion ?? '…',
           ),
           _SettingsTile(
             icon: Icons.code_rounded,
@@ -147,6 +170,43 @@ class SettingsScreen extends ConsumerWidget {
       ),
     ),
     );
+  }
+
+  String _updateStatusText(UpdateState state) {
+    switch (state.status) {
+      case UpdateStatus.checking:
+        return 'Checking…';
+      case UpdateStatus.upToDate:
+        return 'You have the latest version';
+      case UpdateStatus.available:
+        return 'Version ${state.release?.version} is available';
+      case UpdateStatus.downloading:
+        return 'Downloading version ${state.release?.version}… '
+            '${(state.progress * 100).round()}%';
+      case UpdateStatus.readyToInstall:
+        return 'Version ${state.release?.version} is ready to install';
+      case UpdateStatus.error:
+        return state.message ?? 'Could not check for updates';
+      case UpdateStatus.idle:
+        return 'Look for a new release on GitHub';
+    }
+  }
+
+  /// Runs a manual check, or reopens the prompt for an update already found.
+  Future<void> _checkForUpdates(BuildContext context, WidgetRef ref) async {
+    bool hasUpdate() {
+      final status = ref.read(updateProvider).status;
+      return status == UpdateStatus.available ||
+          status == UpdateStatus.downloading ||
+          status == UpdateStatus.readyToInstall;
+    }
+
+    if (!hasUpdate()) {
+      // A newer release raises the prompt through the app shell.
+      await ref.read(updateProvider.notifier).checkForUpdates(userInitiated: true);
+      return;
+    }
+    if (context.mounted) await showUpdateDialog(context, UpdatePrompt.update);
   }
 
   void _confirmLogout(BuildContext context, WidgetRef ref) {
@@ -319,6 +379,13 @@ class _ToggleTileState extends State<_ToggleTile> {
   void initState() {
     super.initState();
     _value = widget.value;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ToggleTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Follow values that load or change after the tile was first built.
+    if (oldWidget.value != widget.value) _value = widget.value;
   }
 
   @override

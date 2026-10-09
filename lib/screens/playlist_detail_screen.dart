@@ -2,7 +2,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:audio_service/audio_service.dart';
 
 import '../audio/queue_notifier.dart';
 import '../models/jellyfin_models.dart';
@@ -169,9 +168,6 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                                 fromId: playlistId,
                                                 fromTitle: playlist.name,
                                               );
-                                          ref
-                                              .read(queueNotifierProvider.notifier)
-                                              .setShuffleMode(AudioServiceShuffleMode.none);
                                           context.push('/player');
                                         },
                                       ),
@@ -186,19 +182,16 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                           ref
                                               .read(recentSelectionsProvider.notifier)
                                               .addSelection(playlistId, 'playlist');
-                                          final s = [...tracks]..shuffle();
                                           ref
                                               .read(queueNotifierProvider.notifier)
                                               .playQueue(
-                                                s,
+                                                tracks,
                                                 0,
                                                 fromType: 'playlist',
                                                 fromId: playlistId,
                                                 fromTitle: playlist.name,
+                                                shuffle: true,
                                               );
-                                          ref
-                                              .read(queueNotifierProvider.notifier)
-                                              .setShuffleMode(AudioServiceShuffleMode.all);
                                           context.push('/player');
                                         },
                                       ),

@@ -19,6 +19,7 @@ import '../services/jellyfin_service.dart';
 import '../services/playlist_service.dart';
 import '../providers/library_provider.dart';
 import 'android_auto_handler.dart';
+import 'queue_order.dart';
 import '../services/podcast_service.dart';
 import '../models/podcast_episode.dart';
 import '../models/podcast_feed.dart';
@@ -42,6 +43,54 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   String? _currentSourceTitle;
   int? _originalSourceLength;
   bool _currentTrackCountedAsListen = false;
+
+  /// Shuffle is implemented by reordering [_queue] itself rather than through
+  /// just_audio's shuffle mode, so it only ever affects the source tracks of
+  /// the current play and never the smart-continue tracks appended after them.
+  bool _shuffleEnabled = false;
+
+  /// The source tracks of the current play in their original order.
+  List<JellyfinTrack> _sourceOrder = [];
+
+  /// True while the audio source is being rearranged; index changes reported
+  /// by the player during that window are transient and must be ignored.
+  bool _reordering = false;
+
+  // Playback settings (persisted; see [setGaplessEnabled] / [setCrossfadeEnabled]).
+  static const _gaplessPrefKey = 'playback_gapless_enabled';
+  static const _crossfadePrefKey = 'playback_crossfade_enabled';
+
+  /// Length of the overlap between two tracks when crossfade is on.
+  static const crossfadeDuration = Duration(seconds: 2);
+
+  /// How long before the overlap the outgoing track is primed on [_fadePlayer].
+  static const _crossfadePrepareLead = Duration(seconds: 10);
+
+  /// When on, the next track is downloaded ahead of time so the hand-over has
+  /// no buffering pause. (The queue itself is always one continuous source.)
+  bool _gaplessEnabled = true;
+
+  /// When on, the end of each song overlaps the start of the next.
+  bool _crossfadeEnabled = false;
+
+  bool get gaplessEnabled => _gaplessEnabled;
+  bool get crossfadeEnabled => _crossfadeEnabled;
+
+  /// Second player used only during a crossfade: it plays the tail of the
+  /// outgoing track while [_player] has already moved on to the next one.
+  AudioPlayer? _fadePlayer;
+
+  /// Track id [_fadePlayer] has been asked to load / has finished loading.
+  String? _fadePreparingFor;
+  String? _fadeReadyFor;
+
+  /// Bumped to abandon a crossfade in progress (pause, skip, new queue...).
+  int _fadeToken = 0;
+  bool _crossfading = false;
+
+  /// Id of the track the index listener last handled, used to drop the echo
+  /// of a reorder (same track, already-known index).
+  String? _activeTrackId;
 
   List<JellyfinTrack> get currentQueue => List<JellyfinTrack>.unmodifiable(_queue);
   int get currentIndex => _currentIndex;
@@ -78,6 +127,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       toContentUri: (path) => _toContentUri(path),
     );
     _setupListeners();
+    _loadPlaybackSettings();
     _loadSavedCredentials();
     _initAudioSession();
   }
@@ -105,7 +155,11 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
     // Keep mediaItem in sync with the currently active track.
     _player.currentIndexStream.listen((index) async {
+      if (_reordering) return;
       if (index != null && index < _queue.length) {
+        final trackId = _queue[index].id;
+        if (index == _currentIndex && trackId == _activeTrackId) return;
+        _activeTrackId = trackId;
         _currentIndex = index;
         _currentTrackCountedAsListen = false;
 
@@ -166,6 +220,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     // Save position periodically and count listen if threshold is met
     _player.positionStream.listen((pos) {
       _savePlaybackPosition(pos);
+      _maybeCrossfade(pos);
 
       // Check listen threshold for music tracks:
       // Counted if listened to by at least half (or 30 seconds, whichever is longer).
@@ -202,6 +257,9 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   /// Play a single [track], optionally with a surrounding [queue] starting at
   /// [queueIndex]. Replaces any existing queue.
+  ///
+  /// With [shuffle], [track] plays first and the rest of [queue] follows in
+  /// random order. Shuffle applies to this play only.
   Future<void> playTrack(
     JellyfinTrack track, {
     List<JellyfinTrack>? queue,
@@ -209,10 +267,19 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     String? fromType,
     String? fromId,
     String? fromTitle,
+    bool shuffle = false,
   }) async {
-    _queue = queue != null ? List<JellyfinTrack>.from(queue) : [track];
-    _currentIndex = queueIndex;
-    _originalSourceLength = queue != null ? queue.length : 1;
+    _sourceOrder = queue != null ? List<JellyfinTrack>.from(queue) : [track];
+    _shuffleEnabled = shuffle && _sourceOrder.length > 1;
+    if (_shuffleEnabled) {
+      _queue = shuffledForPlay(_sourceOrder, startIndex: queueIndex);
+      _currentIndex = 0;
+    } else {
+      _queue = List<JellyfinTrack>.from(_sourceOrder);
+      _currentIndex = queueIndex;
+    }
+    _originalSourceLength = _sourceOrder.length;
+    _activeTrackId = null;
     _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'track';
     _currentSourceId = fromId ?? track.id;
@@ -228,45 +295,63 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
     final sources = _queue.map(_buildAudioSource).toList();
     final concatenating = ConcatenatingAudioSource(children: sources);
+    await _cancelCrossfade();
+    await _player.setShuffleModeEnabled(false);
     await _player.setAudioSource(concatenating, initialIndex: _currentIndex);
     await _player.play();
   }
 
   /// Build a [ConcatenatingAudioSource] from [tracks] and start playback at
   /// [startIndex]. Kicks off background pre-fetch for the next track.
+  ///
+  /// With [shuffle], [tracks] are played in random order starting from a
+  /// random track and [startIndex] is ignored. Shuffle applies to this play
+  /// only: the next call without it plays in order again.
   Future<void> playQueue(
     List<JellyfinTrack> tracks,
     int startIndex, {
     String? fromType,
     String? fromId,
     String? fromTitle,
+    bool shuffle = false,
   }) async {
-    _queue = List<JellyfinTrack>.from(tracks);
-    _currentIndex = startIndex;
+    _sourceOrder = List<JellyfinTrack>.from(tracks);
+    _shuffleEnabled = shuffle && tracks.length > 1;
+    if (_shuffleEnabled) {
+      _queue = shuffledForPlay(_sourceOrder);
+      _currentIndex = 0;
+    } else {
+      _queue = List<JellyfinTrack>.from(tracks);
+      _currentIndex = startIndex;
+    }
     _originalSourceLength = tracks.length;
+    _activeTrackId = null;
     _currentTrackCountedAsListen = false;
     _currentSourceType = fromType ?? 'queue';
     _currentSourceId = fromId;
     _currentSourceTitle = fromTitle;
 
     // Publish queue to audio_service.
-    queue.add(tracks.map(_trackToMediaItem).toList());
-    mediaItem.add(_trackToMediaItem(tracks[startIndex]));
+    queue.add(_queue.map(_trackToMediaItem).toList());
+    mediaItem.add(_trackToMediaItem(_queue[_currentIndex]));
 
     // Save state immediately
     unawaited(_savePlaybackState());
     unawaited(_savePlaybackPositionImmediately(Duration.zero));
 
-    final sources = tracks.map(_buildAudioSource).toList();
+    final sources = _queue.map(_buildAudioSource).toList();
     final concatenating = ConcatenatingAudioSource(children: sources);
 
+    final initialIndex = _currentIndex;
+    await _cancelCrossfade();
+    await _player.setShuffleModeEnabled(false);
     await _player.setAudioSource(
       concatenating,
-      initialIndex: startIndex,
+      initialIndex: initialIndex,
     );
     await _player.play();
 
-    _prefetchNext(startIndex);
+    _prefetchNext(initialIndex);
   }
 
   // ---------------------------------------------------------------------------
@@ -276,16 +361,21 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   Future<void> play() => _player.play();
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    await _cancelCrossfade();
+    await _player.pause();
+  }
 
   @override
   Future<void> stop() async {
+    await _cancelCrossfade();
     await _player.stop();
     await super.stop();
   }
 
   @override
   Future<void> skipToNext() async {
+    await _cancelCrossfade();
     final currentMedia = mediaItem.value;
     if (currentMedia != null && currentMedia.id.startsWith('podcast_')) {
       final currentPos = _player.position;
@@ -307,6 +397,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   @override
   Future<void> skipToPrevious() async {
+    await _cancelCrossfade();
     final currentMedia = mediaItem.value;
     if (currentMedia != null && currentMedia.id.startsWith('podcast_')) {
       final currentPos = _player.position;
@@ -324,12 +415,14 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   @override
   Future<void> seek(Duration position) async {
+    await _cancelCrossfade();
     await _player.seek(position);
     await _savePlaybackPositionImmediately(position);
   }
 
   @override
   Future<void> skipToQueueItem(int index) async {
+    await _cancelCrossfade();
     await _player.seek(Duration.zero, index: index);
     await _player.play();
   }
@@ -399,26 +492,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       if (!_autoHandler.hasContainer(parentMediaId)) {
         unawaited(() async {
           try {
-            List<JellyfinTrack> libraryTracks;
-            if (_allTracksCache.isNotEmpty) {
-              libraryTracks = _allTracksCache;
-            } else if (_inFlightAllTracksFetch != null) {
-              libraryTracks = await _inFlightAllTracksFetch!;
-            } else {
-              _inFlightAllTracksFetch = _playlistService.jellyfinService.getTracks();
-              libraryTracks = await _inFlightAllTracksFetch!;
-              _allTracksCache = libraryTracks;
-              _inFlightAllTracksFetch = null;
-            }
-
-            List<JellyfinTrack> mixTracks = [];
-            if (parentMediaId == 'smart_mix_daily') {
-              mixTracks = await _playlistService.getSmartMix(libraryTracks: libraryTracks);
-            } else if (parentMediaId == 'smart_mix_heavy_rotation') {
-              mixTracks = await _playlistService.getHeavyRotation(libraryTracks: libraryTracks);
-            } else if (parentMediaId == 'smart_mix_undiscovered') {
-              mixTracks = await _playlistService.getUndiscovered(libraryTracks: libraryTracks);
-            }
+            final mixTracks = await _resolveSmartMix(parentMediaId);
             _autoHandler.updateContainer(parentMediaId, mixTracks);
             _notifyChildrenChanged(parentMediaId);
           } catch (_) {
@@ -452,16 +526,83 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         await _player.setLoopMode(LoopMode.all);
         break;
     }
-    playbackState.add(playbackState.value.copyWith(repeatMode: repeatMode));
+    _emitPlaybackState();
     await _savePlaybackState();
   }
 
+  /// Toggles shuffle for the current play. Turning it on shuffles the source
+  /// tracks that have not played yet; turning it off puts the source tracks
+  /// back in their original order. The playing track and any smart-continue
+  /// tracks at the end of the queue are left where they are.
   @override
   Future<void> setShuffleMode(AudioServiceShuffleMode shuffleMode) async {
-    final enabled = shuffleMode != AudioServiceShuffleMode.none;
-    await _player.setShuffleModeEnabled(enabled);
-    playbackState.add(playbackState.value.copyWith(shuffleMode: shuffleMode));
+    final enable = shuffleMode != AudioServiceShuffleMode.none;
+    if (enable != _shuffleEnabled) {
+      _shuffleEnabled = enable;
+      if (_queue.isNotEmpty && _currentIndex < _queue.length) {
+        final sourceLength = _originalSourceLength ?? _queue.length;
+        if (enable) {
+          await _applyQueueOrder(
+            shuffleUpcoming(_queue, _currentIndex, sourceLength),
+            _currentIndex,
+            keepPrefix: true,
+          );
+        } else {
+          final restored = restoreSourceOrder(
+              _queue, _currentIndex, _sourceOrder, sourceLength);
+          await _applyQueueOrder(restored.queue, restored.currentIndex);
+        }
+      }
+    }
+    _emitPlaybackState();
     await _savePlaybackState();
+  }
+
+  /// Rearranges the queue to [newQueue] without interrupting playback. The
+  /// playing track must be the same one, now located at [newIndex]. With
+  /// [keepPrefix], everything before the playing track is known to be
+  /// unchanged and is left alone.
+  Future<void> _applyQueueOrder(
+    List<JellyfinTrack> newQueue,
+    int newIndex, {
+    bool keepPrefix = false,
+  }) async {
+    final oldIndex = _currentIndex;
+    final audioSource = _player.audioSource;
+    _reordering = true;
+    try {
+      if (audioSource is ConcatenatingAudioSource &&
+          audioSource.length == _queue.length) {
+        // Rebuild around the playing item: drop what follows and precedes it,
+        // then insert the new neighbours.
+        if (oldIndex + 1 < audioSource.length) {
+          await audioSource.removeRange(oldIndex + 1, audioSource.length);
+        }
+        if (!keepPrefix) {
+          if (oldIndex > 0) await audioSource.removeRange(0, oldIndex);
+          final before =
+              newQueue.sublist(0, newIndex).map(_buildAudioSource).toList();
+          if (before.isNotEmpty) await audioSource.insertAll(0, before);
+        }
+        final after =
+            newQueue.sublist(newIndex + 1).map(_buildAudioSource).toList();
+        if (after.isNotEmpty) await audioSource.addAll(after);
+      } else {
+        await _player.setAudioSource(
+          ConcatenatingAudioSource(
+              children: newQueue.map(_buildAudioSource).toList()),
+          initialIndex: newIndex,
+          initialPosition: _player.position,
+        );
+      }
+      _queue = newQueue;
+      _currentIndex = newIndex;
+      _activeTrackId = newQueue[newIndex].id;
+    } finally {
+      _reordering = false;
+    }
+    queue.add(_queue.map(_trackToMediaItem).toList());
+    _prefetchNext(_currentIndex);
   }
 
   // ---------------------------------------------------------------------------
@@ -471,6 +612,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   /// Pre-fetch the track after [currentIndex] so it is ready for gapless
   /// playback. Runs entirely in the background – callers must NOT await this.
   Future<void> _prefetchNext(int currentIndex) async {
+    if (!_gaplessEnabled) return;
     final nextIndex = currentIndex + 1;
     if (nextIndex >= _queue.length) return;
 
@@ -487,6 +629,150 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final streamUrl = _playlistService.jellyfinService.getStreamUrl(nextTrack.jellyfinId);
       // Fire-and-forget: start downloading without blocking playback.
       unawaited(_cacheService.downloadTrack(nextTrack.jellyfinId, streamUrl));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Playback settings: gapless + crossfade
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadPlaybackSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _gaplessEnabled = prefs.getBool(_gaplessPrefKey) ?? true;
+      _crossfadeEnabled = prefs.getBool(_crossfadePrefKey) ?? false;
+    } catch (_) {
+      // Keep defaults
+    }
+  }
+
+  /// Turns pre-loading of the next track on or off.
+  Future<void> setGaplessEnabled(bool enabled) async {
+    _gaplessEnabled = enabled;
+    if (enabled) unawaited(_prefetchNext(_currentIndex));
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_gaplessPrefKey, enabled);
+    } catch (_) {
+      // Ignore error
+    }
+  }
+
+  /// Turns the [crossfadeDuration] overlap between songs on or off.
+  Future<void> setCrossfadeEnabled(bool enabled) async {
+    _crossfadeEnabled = enabled;
+    if (!enabled) await _cancelCrossfade();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_crossfadePrefKey, enabled);
+    } catch (_) {
+      // Ignore error
+    }
+  }
+
+  /// Called on every position tick. Shortly before the end of a song it
+  /// primes [_fadePlayer] with that song, and [crossfadeDuration] before the
+  /// end it starts the overlap.
+  void _maybeCrossfade(Duration pos) {
+    if (!_crossfadeEnabled || _crossfading || _reordering) return;
+    if (!_player.playing || _player.loopMode == LoopMode.one) return;
+    if (_player.processingState != ProcessingState.ready) return;
+    if (_currentIndex + 1 >= _queue.length) return;
+
+    final current = _queue[_currentIndex];
+    final next = _queue[_currentIndex + 1];
+    // Spoken-word episodes are never blended into music or each other, and
+    // their "listened" state relies on reaching the real end of the episode.
+    if (current.id.startsWith('podcast_') || next.id.startsWith('podcast_')) return;
+
+    final duration = _player.duration;
+    if (duration == null || duration < const Duration(seconds: 20)) return;
+
+    final remaining = duration - pos;
+    if (remaining <= crossfadeDuration) {
+      if (remaining > const Duration(milliseconds: 500) &&
+          _fadeReadyFor == current.id) {
+        unawaited(_runCrossfade(pos));
+      }
+    } else if (remaining <= _crossfadePrepareLead &&
+        _fadePreparingFor != current.id) {
+      unawaited(_prepareCrossfade(current, duration));
+    }
+  }
+
+  /// Loads [track] into [_fadePlayer], parked where the overlap will begin.
+  Future<void> _prepareCrossfade(JellyfinTrack track, Duration duration) async {
+    _fadePreparingFor = track.id;
+    _fadeReadyFor = null;
+    try {
+      final fade = _fadePlayer ??= AudioPlayer(
+        handleInterruptions: false,
+        handleAudioSessionActivation: false,
+      );
+      await fade.setVolume(0);
+      await fade.setAudioSource(
+        _buildAudioSource(track),
+        initialPosition: duration - crossfadeDuration,
+      );
+      if (_fadePreparingFor == track.id) _fadeReadyFor = track.id;
+    } catch (_) {
+      // No crossfade for this track; it ends normally.
+    }
+  }
+
+  /// Hands the outgoing track's tail to [_fadePlayer] (fading out) while
+  /// [_player] moves to the next track (fading in).
+  Future<void> _runCrossfade(Duration position) async {
+    final fade = _fadePlayer;
+    if (fade == null) return;
+    _crossfading = true;
+    final token = ++_fadeToken;
+    try {
+      await fade.seek(position);
+      if (token != _fadeToken) return;
+      await fade.setVolume(1.0);
+      unawaited(fade.play());
+      await _player.setVolume(0);
+      await _player.seekToNext();
+
+      const steps = 20;
+      final stepDelay = crossfadeDuration ~/ steps;
+      for (var i = 1; i <= steps; i++) {
+        await Future.delayed(stepDelay);
+        if (token != _fadeToken) return;
+        final t = i / steps;
+        await _player.setVolume(t);
+        await fade.setVolume(1.0 - t);
+      }
+    } catch (_) {
+      // Fall through to restoring normal playback below.
+    } finally {
+      if (token == _fadeToken) {
+        _crossfading = false;
+        try {
+          await _player.setVolume(1.0);
+          await fade.pause();
+        } catch (_) {
+          // Ignore error
+        }
+      }
+    }
+  }
+
+  /// Abandons any crossfade in progress and restores full volume.
+  Future<void> _cancelCrossfade() async {
+    _fadeToken++;
+    _fadePreparingFor = null;
+    _fadeReadyFor = null;
+    final wasCrossfading = _crossfading;
+    _crossfading = false;
+    final fade = _fadePlayer;
+    if (fade == null) return;
+    try {
+      if (fade.playing) await fade.pause();
+      if (wasCrossfading) await _player.setVolume(1.0);
+    } catch (_) {
+      // Ignore error
     }
   }
 
@@ -656,6 +942,15 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       bufferedPosition: _player.bufferedPosition,
       speed: _player.speed,
       queueIndex: _currentIndex,
+      // Carried on every emission; omitting them would reset both to "none".
+      shuffleMode: _shuffleEnabled
+          ? AudioServiceShuffleMode.all
+          : AudioServiceShuffleMode.none,
+      repeatMode: switch (_player.loopMode) {
+        LoopMode.off => AudioServiceRepeatMode.none,
+        LoopMode.one => AudioServiceRepeatMode.one,
+        LoopMode.all => AudioServiceRepeatMode.all,
+      },
     ));
   }
 
@@ -858,6 +1153,56 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     }
   }
 
+  /// Returns the tracks of the smart mix behind [mediaId]. Uses the same daily
+  /// cache as the app's smart mix screens, so both show the same mix, and only
+  /// generates (and caches) one when the app has not done so yet today.
+  Future<List<JellyfinTrack>> _resolveSmartMix(String mediaId) async {
+    final mixType = kSmartMixes[mediaId]?.mixType;
+    if (mixType == null) return [];
+
+    final cached = await getCachedSmartMix(mixType);
+    if (cached != null && cached.isNotEmpty) return cached;
+
+    List<JellyfinTrack> libraryTracks;
+    if (_allTracksCache.isNotEmpty) {
+      libraryTracks = _allTracksCache;
+    } else if (_inFlightAllTracksFetch != null) {
+      libraryTracks = await _inFlightAllTracksFetch!;
+    } else {
+      _inFlightAllTracksFetch = _playlistService.jellyfinService.getTracks();
+      try {
+        libraryTracks = await _inFlightAllTracksFetch!;
+        _allTracksCache = libraryTracks;
+      } finally {
+        _inFlightAllTracksFetch = null;
+      }
+    }
+
+    var complete = true;
+    final List<JellyfinTrack> mixTracks;
+    switch (mediaId) {
+      case kSmartMixDaily:
+        mixTracks = await _playlistService.getSmartMix(libraryTracks: libraryTracks);
+      case kSmartMixDailyDrive:
+        mixTracks = await _playlistService.getDailyDrive(
+          libraryTracks: libraryTracks,
+          podcastService: PodcastService(),
+          onIncomplete: () => complete = false,
+        );
+      case kSmartMixHeavy:
+        mixTracks = await _playlistService.getHeavyRotation(libraryTracks: libraryTracks);
+      case kSmartMixUndiscovered:
+        mixTracks = await _playlistService.getUndiscovered(libraryTracks: libraryTracks);
+      default:
+        mixTracks = [];
+    }
+
+    if (complete && mixTracks.isNotEmpty) {
+      await cacheSmartMix(mixType, mixTracks);
+    }
+    return mixTracks;
+  }
+
   /// Records a selection to SharedPreferences directly from the background service context
   Future<void> _recordSelection(String id, String type) async {
     try {
@@ -910,39 +1255,17 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     }
 
     // 1. Handle smart mixes
-    if (mediaId == 'smart_mix_daily' || mediaId == 'smart_mix_heavy_rotation' || mediaId == 'smart_mix_undiscovered') {
+    final smartMix = kSmartMixes[mediaId];
+    if (smartMix != null) {
       try {
-        List<JellyfinTrack> libraryTracks;
-        if (_allTracksCache.isNotEmpty) {
-          libraryTracks = _allTracksCache;
-        } else if (_inFlightAllTracksFetch != null) {
-          libraryTracks = await _inFlightAllTracksFetch!;
-        } else {
-          _inFlightAllTracksFetch = _playlistService.jellyfinService.getTracks();
-          libraryTracks = await _inFlightAllTracksFetch!;
-          _allTracksCache = libraryTracks;
-          _inFlightAllTracksFetch = null;
-        }
-        List<JellyfinTrack> mixTracks = [];
-        if (mediaId == 'smart_mix_daily') {
-          mixTracks = await _playlistService.getSmartMix(libraryTracks: libraryTracks);
-        } else if (mediaId == 'smart_mix_heavy_rotation') {
-          mixTracks = await _playlistService.getHeavyRotation(libraryTracks: libraryTracks);
-        } else if (mediaId == 'smart_mix_undiscovered') {
-          mixTracks = await _playlistService.getUndiscovered(libraryTracks: libraryTracks);
-        }
+        final mixTracks = await _resolveSmartMix(mediaId);
         if (mixTracks.isNotEmpty) {
-          final mixName = mediaId == 'smart_mix_daily'
-              ? 'Daily Mix'
-              : mediaId == 'smart_mix_heavy_rotation'
-                  ? 'Heavy Rotation'
-                  : 'Undiscovered';
           await playQueue(
             mixTracks,
             0,
             fromType: 'smart_mix',
-            fromId: mediaId,
-            fromTitle: mixName,
+            fromId: smartMix.mixType,
+            fromTitle: smartMix.title,
           );
         }
       } catch (_) {
@@ -1145,7 +1468,14 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
       await prefs.setString('playback_queue_tracks', jsonEncode(tracksJson));
       await prefs.setInt('playback_queue_index', _currentIndex);
-      await prefs.setInt('playback_shuffle_mode', _player.shuffleModeEnabled ? 1 : 0);
+      await prefs.setInt('playback_shuffle_mode', _shuffleEnabled ? 1 : 0);
+      await prefs.setStringList(
+          'playback_source_order_ids', _sourceOrder.map((t) => t.id).toList());
+      if (_originalSourceLength != null) {
+        await prefs.setInt('playback_source_length', _originalSourceLength!);
+      } else {
+        await prefs.remove('playback_source_length');
+      }
       await prefs.setInt('playback_repeat_mode', _player.loopMode.index);
 
       if (_currentSourceType != null) {
@@ -1230,6 +1560,29 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
       _queue = List<JellyfinTrack>.from(tracks);
       _currentIndex = index;
+      _activeTrackId = null;
+
+      // Restore the shuffle bookkeeping. Shuffle is only kept if the original
+      // source order can be rebuilt exactly; state saved by older builds
+      // (which shuffled inside the player) falls back to off.
+      _originalSourceLength = prefs.getInt('playback_source_length');
+      final sourceLength = _originalSourceLength;
+      final byId = {for (final t in tracks) t.id: t};
+      final orderIds = prefs.getStringList('playback_source_order_ids') ?? const [];
+      final sourceOrder = [
+        for (final id in orderIds)
+          if (byId[id] != null) byId[id]!,
+      ];
+      if (sourceLength != null &&
+          sourceLength <= tracks.length &&
+          sourceOrder.length == sourceLength &&
+          orderIds.length == sourceLength) {
+        _sourceOrder = sourceOrder;
+        _shuffleEnabled = shuffleModeInt == 1;
+      } else {
+        _sourceOrder = tracks.take(sourceLength ?? tracks.length).toList();
+        _shuffleEnabled = false;
+      }
 
       // Publish the restored queue and active item to audio_service
       queue.add(_queue.map(_trackToMediaItem).toList());
@@ -1238,20 +1591,10 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         unawaited(_pushArtFromFile(_queue[_currentIndex]));
       }
 
-      // Restore loop mode and shuffle mode on the player
+      // Restore loop mode on the player. Player-level shuffle is never used.
       final loopMode = LoopMode.values[repeatModeInt];
       await _player.setLoopMode(loopMode);
-      await _player.setShuffleModeEnabled(shuffleModeInt == 1);
-
-      // Map to AudioService enum to update playbackState
-      final repeatMode = repeatModeInt == 0
-          ? AudioServiceRepeatMode.none
-          : repeatModeInt == 1
-              ? AudioServiceRepeatMode.one
-              : AudioServiceRepeatMode.all;
-      final shuffleMode = shuffleModeInt == 1
-          ? AudioServiceShuffleMode.all
-          : AudioServiceShuffleMode.none;
+      await _player.setShuffleModeEnabled(false);
 
       // Set audio source but do NOT play
       final sources = tracks.map(_buildAudioSource).toList();
@@ -1262,14 +1605,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         initialPosition: Duration(milliseconds: positionMs),
       );
 
-      // Emit initial playbackState so UI is updated
+      // Emit initial playbackState (including repeat/shuffle) so UI is updated
       _emitPlaybackState();
-
-      // Update custom modes in playbackState
-      playbackState.add(playbackState.value.copyWith(
-        repeatMode: repeatMode,
-        shuffleMode: shuffleMode,
-      ));
 
     } catch (_) {
       // Ignore error

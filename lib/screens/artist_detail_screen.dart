@@ -107,13 +107,13 @@ class ArtistDetailScreen extends ConsumerWidget {
                               ),
                               onPressed: () {
                                 ref.read(recentSelectionsProvider.notifier).addSelection(artistId, 'artist');
-                                final shuffledTracks = [...tracks]..shuffle();
                                 ref.read(queueNotifierProvider.notifier).playQueue(
-                                  shuffledTracks,
+                                  tracks,
                                   0,
                                   fromType: 'artist',
                                   fromId: artistId,
                                   fromTitle: artist.name,
+                                  shuffle: true,
                                 );
                                 context.push('/player');
                               },

@@ -1,15 +1,31 @@
+<!-- Android Auto artwork for the "Daily Mix" mix. Mirrors the app's mix card:
+     same top-left to bottom-right gradient and the Material "auto_awesome" icon. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="200dp"
     android:height="200dp"
     android:viewportWidth="200"
     android:viewportHeight="200">
-  <!-- Purple background -->
-  <path android:fillColor="#7C3AED"
-      android:pathData="M0,0 L200,0 L200,200 L0,200 Z"/>
-  <!-- Indigo wave overlay -->
-  <path android:fillColor="#4F46E5"
-      android:pathData="M0,80 Q50,40 100,60 Q150,80 200,50 L200,200 L0,200 Z"/>
-  <!-- Star icon (5-pointed) -->
-  <path android:fillColor="#FFFFFF"
-      android:pathData="M100,52 L108.5,78.5 L136.5,78.5 L114,95 L122.5,121.5 L100,105 L77.5,121.5 L86,95 L63.5,78.5 L91.5,78.5 Z"/>
+  <path android:pathData="M0,0 L200,0 L200,200 L0,200 Z">
+    <aapt:attr name="android:fillColor">
+      <gradient
+          android:type="linear"
+          android:startX="0"
+          android:startY="0"
+          android:endX="200"
+          android:endY="200"
+          android:startColor="#7C3AED"
+          android:endColor="#4F46E5"/>
+    </aapt:attr>
+  </path>
+  <!-- 24dp Material icon scaled to 96 and centred -->
+  <group
+      android:translateX="52"
+      android:translateY="52"
+      android:scaleX="4"
+      android:scaleY="4">
+    <path
+        android:fillColor="#E6FFFFFF"
+        android:pathData="M19,9l1.25,-2.75L23,5l-2.75,-1.25L19,1l-1.25,2.75L15,5l2.75,1.25L19,9zM11.5,9.5L9,4 6.5,9.5 1,12l5.5,2.5L9,20l2.5,-5.5L17,12l-5.5,-2.5zM19,15l-1.25,2.75L15,19l2.75,1.25L19,23l1.25,-2.75L23,19l-2.75,-1.25L19,15z"/>
+  </group>
 </vector>

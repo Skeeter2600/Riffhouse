@@ -49,8 +49,9 @@ class SubscribedFeedsNotifier extends StateNotifier<AsyncValue<List<PodcastFeed>
       // Auto-prune Daily Drive / Mix configuration slot if this podcast was in it
       final playlistService = _ref.read(playlistServiceProvider);
       await playlistService.removePodcastFromDailyMixConfig(feedId);
-      _ref.invalidate(dailyMixConfigProvider);
       await clearSmartMixCache('daily_drive');
+      _ref.invalidate(dailyMixConfigProvider);
+      _ref.invalidate(smartMixTracksProvider('daily_drive'));
     } catch (_) {
       // Ignore error
     }

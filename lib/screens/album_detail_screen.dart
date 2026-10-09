@@ -2,7 +2,6 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:audio_service/audio_service.dart';
 
 import '../audio/queue_notifier.dart';
 import '../models/jellyfin_models.dart';
@@ -156,9 +155,6 @@ class AlbumDetailScreen extends ConsumerWidget {
                                         fromId: albumId,
                                         fromTitle: album.name,
                                       );
-                                  ref
-                                      .read(queueNotifierProvider.notifier)
-                                      .setShuffleMode(AudioServiceShuffleMode.none);
                                   context.push('/player');
                                 },
                                 primary: true,
@@ -173,19 +169,16 @@ class AlbumDetailScreen extends ConsumerWidget {
                                   ref
                                       .read(recentSelectionsProvider.notifier)
                                       .addSelection(albumId, 'album');
-                                  final shuffled = [...tracks]..shuffle();
                                   ref
                                       .read(queueNotifierProvider.notifier)
                                       .playQueue(
-                                        shuffled,
+                                        tracks,
                                         0,
                                         fromType: 'album',
                                         fromId: albumId,
                                         fromTitle: album.name,
+                                        shuffle: true,
                                       );
-                                  ref
-                                      .read(queueNotifierProvider.notifier)
-                                      .setShuffleMode(AudioServiceShuffleMode.all);
                                   context.push('/player');
                                 },
                                 primary: false,

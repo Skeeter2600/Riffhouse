@@ -278,20 +278,26 @@ class PlaylistService {
     required List<JellyfinTrack> libraryTracks,
     required PodcastService podcastService,
     DailyMixConfig? customConfig,
+    void Function()? onIncomplete,
   }) async {
     final config = customConfig ?? await getDailyMixConfig();
     return generateCustomDailyMix(
       config: config,
       libraryTracks: libraryTracks,
       podcastService: podcastService,
+      onIncomplete: onIncomplete,
     );
   }
 
   /// Evaluates each slot in [config] and builds a personalized queue.
+  ///
+  /// [onIncomplete] is called when a slot's source (podcast feed or playlist)
+  /// failed to load, so callers can avoid caching a degraded mix.
   Future<List<JellyfinTrack>> generateCustomDailyMix({
     required DailyMixConfig config,
     required List<JellyfinTrack> libraryTracks,
     required PodcastService podcastService,
+    void Function()? onIncomplete,
   }) async {
     final result = <JellyfinTrack>[];
     final usedTrackIds = <String>{};
@@ -309,7 +315,7 @@ class PlaylistService {
     try {
       subscribedFeeds = await podcastService.getSubscribedFeeds();
     } catch (_) {
-      // Ignore error
+      onIncomplete?.call();
     }
 
     Set<String> listenedGuids = {};
@@ -326,9 +332,12 @@ class PlaylistService {
       }
       try {
         final eps = await podcastService.fetchEpisodes(feed);
+        // The service swallows network errors and returns an empty list.
+        if (eps.isEmpty) onIncomplete?.call();
         feedEpisodesCache[feed.id] = eps;
         return eps;
       } catch (_) {
+        onIncomplete?.call();
         return [];
       }
     }
@@ -361,7 +370,11 @@ class PlaylistService {
           candidateFeeds = List.from(subscribedFeeds);
         }
 
-        if (candidateFeeds.isEmpty && subscribedFeeds.isNotEmpty) {
+        // A slot pinned to specific feeds stays empty if none are subscribed,
+        // rather than substituting an unrelated show.
+        if (candidateFeeds.isEmpty &&
+            subscribedFeeds.isNotEmpty &&
+            slot.podcastSelectionType != PodcastSelectionType.specific) {
           candidateFeeds = List.from(subscribedFeeds);
         }
 
@@ -457,8 +470,12 @@ class PlaylistService {
               for (final pid in slot.selectedPlaylistIds) {
                 try {
                   final tracks = await jellyfinService.getPlaylistTracks(pid);
+                  // The service swallows network errors and returns an empty list.
+                  if (tracks.isEmpty) onIncomplete?.call();
                   playlistTracks.addAll(tracks);
-                } catch (_) {}
+                } catch (_) {
+                  onIncomplete?.call();
+                }
               }
               candidatePool = playlistTracks..shuffle(rng);
             }
@@ -483,8 +500,13 @@ class PlaylistService {
           result.add(t);
         }
 
-        // If not enough unique candidates, pad from remaining library tracks
-        if (picked.length < count) {
+        // If not enough unique candidates, pad from remaining library tracks.
+        // Slots tied to an explicit playlist/genre/artist are left short
+        // instead, so unrelated tracks never appear in them.
+        final isExplicitSource = slot.musicSourceType == MusicSourceType.playlist ||
+            slot.musicSourceType == MusicSourceType.genre ||
+            slot.musicSourceType == MusicSourceType.artist;
+        if (picked.length < count && !isExplicitSource) {
           final remaining = libraryTracks
               .where((t) => !usedTrackIds.contains(t.id))
               .toList()..shuffle(rng);

@@ -139,13 +139,13 @@ class DownloadsScreen extends ConsumerWidget {
                           Expanded(
                             child: OutlinedButton.icon(
                               onPressed: () {
-                                final shuffled = [...playableTracks]..shuffle();
                                 ref.read(queueNotifierProvider.notifier).playQueue(
-                                      shuffled,
+                                      playableTracks,
                                       0,
                                       fromType: 'downloads',
                                       fromId: 'downloads',
                                       fromTitle: 'Downloads',
+                                      shuffle: true,
                                     );
                                 context.push('/player');
                               },

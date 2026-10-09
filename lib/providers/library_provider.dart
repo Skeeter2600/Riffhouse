@@ -10,6 +10,7 @@ import '../models/daily_mix_config.dart';
 import '../models/jellyfin_models.dart';
 import '../services/jellyfin_service.dart';
 import '../services/playlist_service.dart';
+import '../services/podcast_service.dart';
 import 'auth_provider.dart';
 import 'database_provider.dart';
 import 'podcast_provider.dart';
@@ -192,22 +193,27 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
         }
       }
 
-      // Perform database reconciliation
-      final remoteIds = remoteTracks.map((t) => t.id).toSet();
-      final localTracks = await db.getAllLocalTracks();
-      debugPrint('[TracksNotifier.refresh] DB has ${localTracks.length} local tracks before reconciliation');
+      // Perform database reconciliation. A local write failure must not turn a
+      // successful server fetch into an error state.
+      try {
+        final remoteIds = remoteTracks.map((t) => t.id).toSet();
+        final localTracks = await db.getAllLocalTracks();
+        debugPrint('[TracksNotifier.refresh] DB has ${localTracks.length} local tracks before reconciliation');
 
-      // Delete any tracks that are no longer on the server
-      for (final local in localTracks) {
-        if (!remoteIds.contains(local.jellyfinId)) {
-          await db.deleteLocalTrack(local.jellyfinId);
+        // Delete any tracks that are no longer on the server
+        for (final local in localTracks) {
+          if (!remoteIds.contains(local.jellyfinId)) {
+            await db.deleteLocalTrack(local.jellyfinId);
+          }
         }
-      }
 
-      // Upsert all fetched tracks
-      final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
-      await db.bulkInsertLocalTracks(companions);
-      debugPrint('[TracksNotifier.refresh] Upserted ${companions.length} tracks to DB');
+        // Upsert all fetched tracks
+        final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
+        await db.bulkInsertLocalTracks(companions);
+        debugPrint('[TracksNotifier.refresh] Upserted ${companions.length} tracks to DB');
+      } catch (e, st) {
+        debugPrint('[TracksNotifier.refresh] DB reconciliation ERROR: $e\n$st');
+      }
 
       return remoteTracks;
     });
@@ -455,7 +461,7 @@ final cachedTracksProvider =
         CachedTracksNotifier.new);
 
 // ---------------------------------------------------------------------------
-// Smart mix caching (regenerates daily at 6 AM local time)
+// Smart mix caching (regenerates daily at midnight local time)
 // ---------------------------------------------------------------------------
 
 class _CachedMix {
@@ -473,6 +479,15 @@ bool _isMixCacheValid(DateTime generatedAt) {
 }
 
 final Map<String, _CachedMix> _mixMemoryCache = {};
+
+/// Generations currently running, so concurrent provider builds share one
+/// result instead of each producing a different random mix.
+final Map<String, Future<List<JellyfinTrack>>> _mixInFlight = {};
+
+/// Bumped on every cache clear so a generation started before the clear does
+/// not persist its now-outdated result.
+int _mixCacheEpoch = 0;
+
 const _smartMixStoragePrefix = 'smart_mix_persisted_cache_v2_';
 
 Future<List<JellyfinTrack>?> _getPersistedMix(String mixType) async {
@@ -522,11 +537,23 @@ Future<void> _persistMix(String mixType, List<JellyfinTrack> tracks) async {
   }
 }
 
+/// Read access to the daily smart mix cache for code outside the provider
+/// graph (the Android Auto browse tree), so it shows the same mix as the app.
+Future<List<JellyfinTrack>?> getCachedSmartMix(String mixType) =>
+    _getPersistedMix(mixType);
+
+/// Stores [tracks] as today's mix for [mixType]. See [getCachedSmartMix].
+Future<void> cacheSmartMix(String mixType, List<JellyfinTrack> tracks) =>
+    _persistMix(mixType, tracks);
+
 Future<void> clearSmartMixCache([String? mixType]) async {
+  _mixCacheEpoch++;
   if (mixType != null) {
     _mixMemoryCache.remove(mixType);
+    _mixInFlight.remove(mixType);
   } else {
     _mixMemoryCache.clear();
+    _mixInFlight.clear();
   }
   try {
     final prefs = await SharedPreferences.getInstance();
@@ -562,15 +589,16 @@ class DailyMixConfigNotifier extends StateNotifier<AsyncValue<DailyMixConfig>> {
 
   Future<void> saveConfig(DailyMixConfig config) async {
     await _playlistService.saveDailyMixConfig(config);
-    state = AsyncData(config);
+    // Clear before publishing the new config so nothing re-reads the old mix.
     await clearSmartMixCache('daily_drive');
+    state = AsyncData(config);
   }
 
   Future<void> resetConfig() async {
     await _playlistService.resetDailyMixConfig();
     final defaultConfig = DailyMixConfig.defaultConfig();
-    state = AsyncData(defaultConfig);
     await clearSmartMixCache('daily_drive');
+    state = AsyncData(defaultConfig);
   }
 }
 
@@ -593,15 +621,47 @@ final recentGenresProvider = FutureProvider<List<String>>((ref) async {
 /// Provider that resolves the tracks for a given smart mix type
 /// ('daily', 'heavy', 'undiscovered', 'daily_drive').
 /// Results are persisted to disk and valid until midnight of each day.
-final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>((ref, mixType) async {
+final smartMixTracksProvider =
+    FutureProvider.autoDispose.family<List<JellyfinTrack>, String>((ref, mixType) async {
+  // Resolve dependencies up front; the provider may be disposed while awaiting.
+  final tracksFuture = ref.watch(tracksProvider.future)..ignore();
+  final playlistService = ref.read(playlistServiceProvider);
+  final podcastService = ref.read(podcastServiceProvider);
+
   // Return persisted/cached result if still valid (before midnight).
   final cached = await _getPersistedMix(mixType);
   if (cached != null && cached.isNotEmpty) {
     return cached;
   }
 
-  final tracks = await ref.watch(tracksProvider.future);
-  final playlistService = ref.read(playlistServiceProvider);
+  final running = _mixInFlight[mixType];
+  if (running != null) return running;
+
+  final generation = _generateSmartMix(
+    mixType: mixType,
+    tracksFuture: tracksFuture,
+    playlistService: playlistService,
+    podcastService: podcastService,
+  );
+  _mixInFlight[mixType] = generation;
+  try {
+    return await generation;
+  } finally {
+    if (identical(_mixInFlight[mixType], generation)) {
+      _mixInFlight.remove(mixType);
+    }
+  }
+});
+
+Future<List<JellyfinTrack>> _generateSmartMix({
+  required String mixType,
+  required Future<List<JellyfinTrack>> tracksFuture,
+  required PlaylistService playlistService,
+  required PodcastService podcastService,
+}) async {
+  final epoch = _mixCacheEpoch;
+  final tracks = await tracksFuture;
+  var complete = true;
 
   List<JellyfinTrack> result;
   if (mixType.startsWith('genre_')) {
@@ -613,12 +673,12 @@ final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String
   } else if (mixType == 'daily') {
     result = await playlistService.getSmartMix(libraryTracks: tracks);
   } else if (mixType == 'daily_drive') {
-    final podcastService = ref.read(podcastServiceProvider);
-    final customConfig = ref.watch(dailyMixConfigProvider).valueOrNull;
+    // The config is read from storage here rather than watched, so a config
+    // provider emission cannot trigger a second, different generation.
     result = await playlistService.getDailyDrive(
       libraryTracks: tracks,
       podcastService: podcastService,
-      customConfig: customConfig,
+      onIncomplete: () => complete = false,
     );
   } else if (mixType == 'heavy') {
     result = await playlistService.getHeavyRotation(libraryTracks: tracks);
@@ -628,10 +688,13 @@ final smartMixTracksProvider = FutureProvider.family<List<JellyfinTrack>, String
     result = [];
   }
 
-  // Persist result until next midnight
-  await _persistMix(mixType, result);
+  // Persist result until next midnight, unless a source failed to load (retry
+  // on the next open) or the cache was cleared while generating.
+  if (complete && result.isNotEmpty && epoch == _mixCacheEpoch) {
+    await _persistMix(mixType, result);
+  }
   return result;
-});
+}
 
 // ---------------------------------------------------------------------------
 // Recently played (local cache — fast, works offline)

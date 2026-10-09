@@ -17,6 +17,25 @@ const String kPrefixPlaylist = 'playlist_';
 const String kPrefixAlbum = 'album_';
 const String kPrefixArtist = 'artist_';
 
+const String kSmartMixDaily = 'smart_mix_daily';
+const String kSmartMixDailyDrive = 'smart_mix_daily_drive';
+const String kSmartMixHeavy = 'smart_mix_heavy_rotation';
+const String kSmartMixUndiscovered = 'smart_mix_undiscovered';
+
+/// Smart mix media id → display title and the mix type key used by the app's
+/// smart mix cache, so Android Auto and the app show the same mix.
+const Map<String, ({String title, String mixType})> kSmartMixes = {
+  kSmartMixDaily: (title: 'Daily Mix', mixType: 'daily'),
+  kSmartMixDailyDrive: (title: 'Daily Drive', mixType: 'daily_drive'),
+  kSmartMixHeavy: (title: 'Heavy Rotation', mixType: 'heavy'),
+  kSmartMixUndiscovered: (title: 'Undiscovered', mixType: 'undiscovered'),
+};
+
+/// Most tracks listed for one container. A browse result travels in a single
+/// Binder transaction (~1MB); very long playlists would overflow it and show
+/// nothing. Playback still uses the full track list.
+const int kMaxBrowseTracks = 200;
+
 /// Package name used to build android.resource:// URIs for bundled drawables.
 const String _kPackage = 'com.riffhouse.mobile_music_player';
 
@@ -77,7 +96,10 @@ class AndroidAutoHandler {
   /// Map of container id → track list.
   ///
   /// Keys follow the pattern `playlist_<id>` or `album_<id>`.
-  Map<String, List<JellyfinTrack>> _tracksByContainer = {};
+  ///
+  /// Always a growable map owned by this class: tracks are loaded lazily per
+  /// container, so it must never be swapped for a caller's (possibly const) map.
+  final Map<String, List<JellyfinTrack>> _tracksByContainer = {};
 
   /// Callback to get cached artwork local file path
   final String? Function(String remoteUrl) getCachedArtPath;
@@ -142,7 +164,9 @@ class AndroidAutoHandler {
     _playlists = playlists;
     _albums = albums;
     _artists = artists;
-    _tracksByContainer = tracksByContainer;
+    // Merge rather than replace, so containers already loaded on demand
+    // survive a library sync.
+    _tracksByContainer.addAll(tracksByContainer);
     _recentlyPlayed = recentlyPlayed;
     _newAlbums = newAlbums;
   }
@@ -227,7 +251,7 @@ class AndroidAutoHandler {
     return [
       MediaItem(
         id: kRootHome,
-        title: 'Home',
+        title: 'Library',
         playable: false,
         artUri: Uri.parse('android.resource://$_kPackage/drawable/ic_home'),
         extras: _kGridExtras,
@@ -257,35 +281,16 @@ class AndroidAutoHandler {
     final items = <MediaItem>[];
 
     // ── Smart Mixes (pinned items directly at the top) ────────────────────────
-    items.addAll([
-      MediaItem(
-        id: 'smart_mix_daily',
-        title: 'Daily Mix',
-        displaySubtitle: 'Curated just for you',
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_daily'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
-      MediaItem(
-        id: 'smart_mix_heavy_rotation',
-        title: 'Heavy Rotation',
-        displaySubtitle: 'Your most-played tracks',
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_heavy'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
-      MediaItem(
-        id: 'smart_mix_undiscovered',
-        title: 'Undiscovered',
-        displaySubtitle: "Music you haven't explored yet",
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_undiscovered'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
-    ]);
+    items.addAll(_buildSmartMixes());
 
     // ── Recently Played (from local selection history) ───────────────────────
-    for (final item in _recentlyPlayed.take(8)) {
+    // Only albums, playlists and artists have a browse node here; mixes and
+    // single tracks would open as an empty folder.
+    final browsableRecents = _recentlyPlayed.where((item) =>
+        item.type == RecentlyPlayedType.album ||
+        item.type == RecentlyPlayedType.playlist ||
+        item.type == RecentlyPlayedType.artist);
+    for (final item in browsableRecents.take(8)) {
       final containerId = item.type == RecentlyPlayedType.album
           ? '$kPrefixAlbum${item.id}'
           : item.type == RecentlyPlayedType.playlist
@@ -437,44 +442,40 @@ class AndroidAutoHandler {
   // ---------------------------------------------------------------------------
   // Smart Mixes
   // ---------------------------------------------------------------------------
+  /// Titles, subtitles and artwork mirror the mix cards on the app's home
+  /// screen (same icon and gradient per mix).
   List<MediaItem> _buildSmartMixes() {
+    MediaItem mix(String id, String title, String subtitle, String drawable) {
+      return MediaItem(
+        id: id,
+        title: title,
+        displaySubtitle: subtitle,
+        artUri: Uri.parse('android.resource://$_kPackage/drawable/$drawable'),
+        playable: false,
+        extras: _kGridExtras,
+      );
+    }
+
     return [
-      MediaItem(
-        id: 'smart_mix_daily',
-        title: 'Daily Mix',
-        displaySubtitle: 'Curated just for you',
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_daily'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
-      MediaItem(
-        id: 'smart_mix_heavy_rotation',
-        title: 'Heavy Rotation',
-        displaySubtitle: 'Your most-played tracks',
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_heavy'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
-      MediaItem(
-        id: 'smart_mix_undiscovered',
-        title: 'Undiscovered',
-        displaySubtitle: "Music you haven't explored yet",
-        artUri: Uri.parse('android.resource://$_kPackage/drawable/mix_undiscovered'),
-        playable: false,
-        extras: _kGridExtras,
-      ),
+      mix(kSmartMixDaily, 'Daily Mix', 'Curated for you', 'mix_daily'),
+      mix(kSmartMixDailyDrive, 'Daily Drive', 'News + music', 'mix_daily_drive'),
+      mix(kSmartMixHeavy, 'Heavy Rotation', 'Your favorites', 'mix_heavy'),
+      mix(kSmartMixUndiscovered, 'Undiscovered', 'New to you', 'mix_undiscovered'),
     ];
   }
+
   // ---------------------------------------------------------------------------
   // Track lists (shared by playlists and albums)
   // ---------------------------------------------------------------------------
 
   List<MediaItem> _buildTrackList(String containerId) {
     final tracks = _tracksByContainer[containerId] ?? [];
-    return tracks.map((track) {
+    return tracks.take(kMaxBrowseTracks).map((track) {
       // Prefer track-level imageTag for most precise artwork;
       // fall back to album-level art if track has no own image.
-      final artUri = track.imageTag != null && track.imageTag!.isNotEmpty
+      final artUri = track.id.startsWith('podcast_')
+          ? (track.imageTag != null ? Uri.tryParse(track.imageTag!) : null)
+          : track.imageTag != null && track.imageTag!.isNotEmpty
           ? _resolveArtUri(track.id, track.imageTag, containerId)
           : (track.albumId.isNotEmpty
               ? _resolveArtUri(track.albumId, null, containerId)
@@ -490,7 +491,6 @@ class AndroidAutoHandler {
         extras: {
           kContentStyleSupported: true,
           kContentStylePlayableHint: kContentStyleList,
-          'streamUrl': '$serverUrl/Audio/${track.id}/stream?static=true&api_key=$accessToken',
           'containerId': containerId,
         },
       );

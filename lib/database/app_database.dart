@@ -91,8 +91,13 @@ class AppDatabase extends _$AppDatabase {
 
   Future<List<CachedTrack>> getAllCachedTracks() => select(cachedTracks).get();
 
+  // Upserts target the unique jellyfinId column: insertOnConflictUpdate only
+  // handles conflicts on the autoincrement primary key, which callers rarely set.
   Future<void> upsertCachedTrack(CachedTracksCompanion entry) =>
-      into(cachedTracks).insertOnConflictUpdate(entry);
+      into(cachedTracks).insert(
+        entry,
+        onConflict: DoUpdate((_) => entry, target: [cachedTracks.jellyfinId]),
+      );
 
   Future<int> deleteCachedTrack(String jellyfinId) =>
       (delete(cachedTracks)..where((t) => t.jellyfinId.equals(jellyfinId)))
@@ -113,7 +118,10 @@ class AppDatabase extends _$AppDatabase {
       select(playbackRecords).get();
 
   Future<void> upsertPlaybackRecord(PlaybackRecordsCompanion entry) =>
-      into(playbackRecords).insertOnConflictUpdate(entry);
+      into(playbackRecords).insert(
+        entry,
+        onConflict: DoUpdate((_) => entry, target: [playbackRecords.jellyfinId]),
+      );
 
   Future<void> incrementPlayCount(String jellyfinId) async {
     final existing = await getPlaybackRecord(jellyfinId);
@@ -168,8 +176,14 @@ class AppDatabase extends _$AppDatabase {
       (select(localPlaylists)..where((t) => t.jellyfinId.equals(jellyfinId)))
           .getSingleOrNull();
 
-  Future<void> upsertLocalPlaylist(LocalPlaylistsCompanion entry) =>
-      into(localPlaylists).insertOnConflictUpdate(entry);
+  Future<void> upsertLocalPlaylist(LocalPlaylistsCompanion entry) {
+    // Never rewrite the primary key on conflict; the row is matched by jellyfinId.
+    final update = entry.copyWith(id: const Value.absent());
+    return into(localPlaylists).insert(
+      entry,
+      onConflict: DoUpdate((_) => update, target: [localPlaylists.jellyfinId]),
+    );
+  }
 
   Future<int> deleteLocalPlaylist(String jellyfinId) =>
       (delete(localPlaylists)..where((t) => t.jellyfinId.equals(jellyfinId)))
@@ -196,11 +210,20 @@ class AppDatabase extends _$AppDatabase {
   Future<List<LocalTrack>> getAllLocalTracks() => select(localTracks).get();
 
   Future<void> upsertLocalTrack(LocalTracksCompanion entry) =>
-      into(localTracks).insertOnConflictUpdate(entry);
+      into(localTracks).insert(
+        entry,
+        onConflict: DoUpdate((_) => entry, target: [localTracks.jellyfinId]),
+      );
 
   Future<void> bulkInsertLocalTracks(List<LocalTracksCompanion> entries) async {
     await batch((batch) {
-      batch.insertAllOnConflictUpdate(localTracks, entries);
+      for (final entry in entries) {
+        batch.insert(
+          localTracks,
+          entry,
+          onConflict: DoUpdate((_) => entry, target: [localTracks.jellyfinId]),
+        );
+      }
     });
   }
 
