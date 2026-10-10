@@ -64,7 +64,7 @@ dependencies:
   audio_session: any
   flutter_cache_manager: any
   url_launcher: ^6.3.2
-  package_info_plus: ^10.2.2
+  package_info_plus: ">=8.0.0 <10.0.0"
 dev_dependencies:
   flutter_test:
     sdk: flutter
