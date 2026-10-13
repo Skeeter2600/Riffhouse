@@ -13,9 +13,7 @@
 
 </div>
 
-<p align="center">
-  <img alt="Riffhouse: the library and the player, for Jellyfin, Emby and Navidrome / Subsonic" src="docs/images/hero.png" width="900" />
-</p>
+<img width="1600" height="900" alt="riffhouse-1 1 1-hero" src="https://github.com/user-attachments/assets/19256767-32f6-4187-88a9-c8effaf49299" />
 
 ---
 
@@ -27,25 +25,13 @@ Riffhouse is a lightweight, cross-platform music streaming client that connects 
 
 ---
 
-## Screenshots
-
-<p align="center">
-  <img alt="Liked Songs, the player, crossfade settings and downloads" src="docs/images/features.png" width="900" />
-</p>
-
-<p align="center">
-  <img alt="Android Auto now-playing screen with shuffle, repeat and like buttons" src="docs/images/android-auto.png" width="900" />
-</p>
-
-<p align="center">
-  <img alt="Browsing mixes, playlists and albums in Android Auto" src="docs/images/android-auto-browse.png" width="560" />
-</p>
+<img width="1600" height="1000" alt="riffhouse-1 1 1-features" src="https://github.com/user-attachments/assets/218cccad-3a7b-49c4-ba74-fa7db068593e" />
+<img width="1600" height="800" alt="riffhouse-1 1 1-auto" src="https://github.com/user-attachments/assets/b98e078c-ae70-4064-8e35-34978036d64e" />
 
 ---
 
 ## Table of Contents
 
-- [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [Installation](#installation)
