@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The notification icon, the Android Auto browse icons and the media control
+  icons are looked up by name at run time (from Dart), which the release
+  build's resource shrinker cannot see. Without this it removes them.
+-->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_*,@drawable/mix_*" />
