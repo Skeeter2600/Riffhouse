@@ -9,6 +9,7 @@ import '../providers/library_provider.dart';
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/album_card.dart';
+import '../widgets/art_placeholder.dart';
 
 class ArtistDetailScreen extends ConsumerWidget {
   final String artistId;
@@ -19,7 +20,7 @@ class ArtistDetailScreen extends ConsumerWidget {
     final artistsAsync = ref.watch(artistsProvider);
     final artistAlbumsAsync = ref.watch(artistAlbumsProvider(artistId));
     final artistTracksAsync = ref.watch(artistTracksProvider(artistId));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
 
     return artistsAsync.when(
       loading: () => const Scaffold(
@@ -278,7 +279,7 @@ class _TopTrackTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && track.imageTag != null)
         ? service.getImageUrl(track.id, track.imageTag!)
         : null;
@@ -294,9 +295,9 @@ class _TopTrackTile extends ConsumerWidget {
               ? CachedNetworkImage(
                   imageUrl: imageUrl,
                   fit: BoxFit.cover,
-                  errorWidget: (_, __, ___) => _ph(),
+                  errorWidget: (_, __, ___) => const ArtPlaceholder(),
                 )
-              : _ph(),
+              : const ArtPlaceholder(),
         ),
       ),
       title: Text(track.name,
@@ -317,9 +318,4 @@ class _TopTrackTile extends ConsumerWidget {
       },
     );
   }
-
-  Widget _ph() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.music_note, color: AppColors.textMuted),
-      );
 }

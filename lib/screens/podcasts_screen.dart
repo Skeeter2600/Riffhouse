@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intl/intl.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:go_router/go_router.dart';
 
@@ -9,6 +8,7 @@ import '../models/podcast_feed.dart';
 import '../providers/podcast_provider.dart';
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
 
 class PodcastsScreen extends ConsumerStatefulWidget {
   const PodcastsScreen({super.key});
@@ -78,8 +78,6 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
           }
 
           return AlertDialog(
-            backgroundColor: AppColors.card,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             title: const Row(
               children: [
                 Icon(Icons.podcasts_rounded, color: AppColors.primary, size: 22),
@@ -135,27 +133,6 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
         },
       ),
     );
-  }
-
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final yesterday = today.subtract(const Duration(days: 1));
-    final compareDate = DateTime(date.year, date.month, date.day);
-
-    if (compareDate == today) {
-      return 'Today';
-    } else if (compareDate == yesterday) {
-      return 'Yesterday';
-    } else {
-      return DateFormat('EEEE, MMM d').format(date);
-    }
-  }
-
-  String _formatDuration(Duration duration) {
-    if (duration == Duration.zero) return '10-15 mins';
-    final minutes = duration.inMinutes;
-    return '$minutes min';
   }
 
   @override
@@ -413,8 +390,8 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
                             // Navigate to detail screen of that show!
                             context.push('/podcast/${episode.podcastFeedId}');
                           },
-                          formattedDate: _formatDate(episode.pubDate),
-                          formattedDuration: _formatDuration(episode.duration),
+                          formattedDate: formatRelativeDate(episode.pubDate),
+                          formattedDuration: formatEpisodeLength(episode.duration),
                         );
                       },
                       childCount: filteredEpisodes.length,

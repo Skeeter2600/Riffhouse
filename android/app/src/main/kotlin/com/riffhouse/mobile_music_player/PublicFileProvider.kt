@@ -8,6 +8,15 @@ import android.os.ParcelFileDescriptor
 import java.io.File
 import java.io.FileNotFoundException
 
+/**
+ * Serves cached artwork to Android Auto and the system media controls, which
+ * run in other processes and cannot send the Jellyfin auth header themselves.
+ *
+ * The provider is exported, so any app on the device can call it. It therefore
+ * only ever hands out artwork: files in the image cache folder, or the
+ * `art_*.jpg` files the audio handler downloads into the cache root. Nothing
+ * else in the cache (such as a downloaded update) is reachable.
+ */
 class PublicFileProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
 
@@ -37,46 +46,36 @@ class PublicFileProvider : ContentProvider() {
     ): Int = 0
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
-        android.util.Log.d("PublicFileProvider", "openFile called for URI: $uri")
-        val path = uri.path ?: run {
-            android.util.Log.e("PublicFileProvider", "URI path is null")
-            throw FileNotFoundException("URI path is null")
-        }
-        val context = context ?: run {
-            android.util.Log.e("PublicFileProvider", "Context is null")
-            throw FileNotFoundException("Context is null")
+        val context = context ?: throw FileNotFoundException("No context")
+        val path = uri.path ?: throw FileNotFoundException("URI has no path")
+        if (!path.startsWith(CACHE_PREFIX)) {
+            throw FileNotFoundException("Unsupported path")
         }
 
-        val file: File = if (path.startsWith("/cache/")) {
-            val relativePath = path.substring("/cache/".length)
-            File(context.cacheDir, relativePath)
-        } else if (path.startsWith("/files/")) {
-            val relativePath = path.substring("/files/".length)
-            File(context.filesDir, relativePath)
-        } else {
-            android.util.Log.e("PublicFileProvider", "Unsupported path: $path")
-            throw FileNotFoundException("Unsupported path: $path")
+        // Resolve symlinks and ".." before checking where the file really is.
+        val cacheDir = context.cacheDir.canonicalFile
+        val file = File(cacheDir, path.substring(CACHE_PREFIX.length)).canonicalFile
+        if (!isArtwork(file, cacheDir)) {
+            throw SecurityException("Access denied")
         }
-
-        // Prevent path traversal attacks
-        val canonicalPath = file.canonicalFile.absolutePath
-        val cacheCanonical = context.cacheDir.canonicalFile.absolutePath
-        val filesCanonical = context.filesDir.canonicalFile.absolutePath
-        
-        val isUnderCache = canonicalPath.startsWith(cacheCanonical + File.separator) || canonicalPath == cacheCanonical
-        val isUnderFiles = canonicalPath.startsWith(filesCanonical + File.separator) || canonicalPath == filesCanonical
-        
-        if (!isUnderCache && !isUnderFiles) {
-            android.util.Log.e("PublicFileProvider", "Access denied (path traversal): canonicalPath=$canonicalPath, cache=$cacheCanonical, files=$filesCanonical")
-            throw SecurityException("Access denied: path traversal attempt")
+        if (!file.isFile) {
+            throw FileNotFoundException("File not found")
         }
-
-        if (!file.exists()) {
-            android.util.Log.e("PublicFileProvider", "File not found: ${file.absolutePath}")
-            throw FileNotFoundException("File not found: ${file.absolutePath}")
-        }
-
-        android.util.Log.d("PublicFileProvider", "Successfully opened file descriptor for: ${file.absolutePath}")
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    private fun isArtwork(file: File, cacheDir: File): Boolean {
+        val parent = file.parentFile ?: return false
+        val imageCache = File(cacheDir, IMAGE_CACHE_DIR)
+        if (parent == imageCache) return true
+        return parent == cacheDir &&
+            file.name.startsWith("art_") && file.name.endsWith(".jpg")
+    }
+
+    private companion object {
+        const val CACHE_PREFIX = "/cache/"
+
+        // Folder used by flutter_cache_manager's default cache.
+        const val IMAGE_CACHE_DIR = "libCachedImageData"
     }
 }

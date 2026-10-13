@@ -94,7 +94,7 @@ class UpdateNotifier extends StateNotifier<UpdateState> {
   static const _lastSeenVersionKey = 'update_last_seen_version';
 
   final UpdateService _service;
-  File? _downloadedApk;
+  File? _downloadedUpdate;
   bool _busy = false;
 
   UpdateNotifier(this._service) : super(const UpdateState()) {
@@ -184,7 +184,8 @@ class UpdateNotifier extends StateNotifier<UpdateState> {
         release: latest,
       );
 
-      final canDownload = _service.canSelfInstall && latest.apkUrl != null;
+      final canDownload =
+          _service.canSelfInstall && latest.downloadUrl != null;
       if (canDownload && state.autoUpdateEnabled) {
         await _download(latest);
         if (!mounted) return;
@@ -209,15 +210,22 @@ class UpdateNotifier extends StateNotifier<UpdateState> {
     if (release == null || _busy) return;
     _busy = true;
     try {
-      if (state.status != UpdateStatus.readyToInstall || _downloadedApk == null) {
+      if (state.status != UpdateStatus.readyToInstall ||
+          _downloadedUpdate == null) {
         await _download(release);
         if (!mounted || state.status != UpdateStatus.readyToInstall) return;
       }
-      final result = await _service.installApk(_downloadedApk!);
+      final result = await _service.installUpdate(_downloadedUpdate!);
       if (!mounted) return;
       switch (result) {
         case InstallResult.started:
           state = state.copyWith(clearMessage: true);
+        case InstallResult.restartRequired:
+          state = state.copyWith(message: 'Restarting to finish the update…');
+          // Give the message a moment on screen; the helper script is
+          // waiting for this process to end before it swaps the files.
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          exit(0);
         case InstallResult.permissionRequired:
           state = state.copyWith(
             message: 'Allow Riffhouse to install apps, then tap Install again',
@@ -239,7 +247,7 @@ class UpdateNotifier extends StateNotifier<UpdateState> {
       clearMessage: true,
     );
     try {
-      _downloadedApk = await _service.downloadApk(
+      _downloadedUpdate = await _service.downloadUpdate(
         release,
         onProgress: (p) {
           // Throttle rebuilds to whole-percent steps.
@@ -252,7 +260,7 @@ class UpdateNotifier extends StateNotifier<UpdateState> {
       state = state.copyWith(status: UpdateStatus.readyToInstall, progress: 1);
     } catch (_) {
       if (!mounted) return;
-      _downloadedApk = null;
+      _downloadedUpdate = null;
       state = state.copyWith(
         status: UpdateStatus.available,
         message: 'Download failed. Check your connection and try again',

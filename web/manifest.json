@@ -1,11 +1,11 @@
 {
-    "name": "mobile_music_player",
-    "short_name": "mobile_music_player",
+    "name": "Riffhouse",
+    "short_name": "Riffhouse",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0A0A0F",
     "theme_color": "#0A0A0F",
-    "description": "A new Flutter project.",
+    "description": "A music player for your self-hosted Jellyfin server.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

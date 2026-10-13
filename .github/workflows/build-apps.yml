@@ -26,11 +26,41 @@ jobs:
         with:
           flutter-version: '3.44.4'
           cache: true
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          # A tag like v1.2.3 becomes version 1.2.3 with build number 10203,
+          # so the tag is the single source of truth and the Android
+          # versionCode always increases. Manual runs keep the pubspec version.
+          TAG="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            NUMBER=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+            echo "VERSION_ARGS=--build-name=$NAME --build-number=$NUMBER" >> "$GITHUB_ENV"
+          fi
+      - name: Set up release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          # Every release must carry the same signature, otherwise Android
+          # rejects the update with "App not installed".
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets are not set"
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/riffhouse-release.jks
+          {
+            echo "storeFile=riffhouse-release.jks"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=riffhouse"
+            echo "keyPassword=$ANDROID_KEYSTORE_PASSWORD"
+          } > android/key.properties
       - name: Build Android APK
         run: |
           flutter pub get
           dart run build_runner build --delete-conflicting-outputs
-          flutter build apk --release
+          flutter build apk --release $VERSION_ARGS
           cp build/app/outputs/flutter-apk/app-release.apk Riffhouse-Android.apk
       - uses: actions/upload-artifact@v4
         with:
@@ -49,11 +79,24 @@ jobs:
           channel: 'stable'
           flutter-version: '3.44.4'
           cache: true
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          # A tag like v1.2.3 becomes version 1.2.3 with build number 10203,
+          # so the tag is the single source of truth and the Android
+          # versionCode always increases. Manual runs keep the pubspec version.
+          TAG="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            NUMBER=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+            echo "VERSION_ARGS=--build-name=$NAME --build-number=$NUMBER" >> "$GITHUB_ENV"
+          fi
       - name: Build Windows Desktop
+        shell: bash
         run: |
           flutter pub get
           dart run build_runner build --delete-conflicting-outputs
-          flutter build windows --release
+          flutter build windows --release $VERSION_ARGS
       - name: Archive Windows Release
         shell: pwsh
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath Riffhouse-Windows-x64.zip
@@ -78,11 +121,23 @@ jobs:
           channel: 'stable'
           flutter-version: '3.44.4'
           cache: true
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          # A tag like v1.2.3 becomes version 1.2.3 with build number 10203,
+          # so the tag is the single source of truth and the Android
+          # versionCode always increases. Manual runs keep the pubspec version.
+          TAG="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            NUMBER=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+            echo "VERSION_ARGS=--build-name=$NAME --build-number=$NUMBER" >> "$GITHUB_ENV"
+          fi
       - name: Build Linux Desktop
         run: |
           flutter pub get
           dart run build_runner build --delete-conflicting-outputs
-          flutter build linux --release
+          flutter build linux --release $VERSION_ARGS
       - name: Archive Linux Release
         run: |
           cd build/linux/x64/release/bundle
@@ -105,6 +160,18 @@ jobs:
           flutter-version: '3.44.4'
           cache: true
 
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          # A tag like v1.2.3 becomes version 1.2.3 with build number 10203,
+          # so the tag is the single source of truth and the Android
+          # versionCode always increases. Manual runs keep the pubspec version.
+          TAG="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            NUMBER=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+            echo "VERSION_ARGS=--build-name=$NAME --build-number=$NUMBER" >> "$GITHUB_ENV"
+          fi
       - name: Setup & Codegen
         run: |
           flutter pub get
@@ -113,15 +180,14 @@ jobs:
       # Build macOS Desktop App
       - name: Build macOS
         run: |
-          flutter build macos --release
+          flutter build macos --release $VERSION_ARGS
           cd build/macos/Build/Products/Release
-          # Target whatever .app file Flutter produced and name the zip Riffhouse-macOS.zip
           zip -r ${{ github.workspace }}/Riffhouse-macOS.zip *.app
 
       # Build Unsigned iOS IPA for Sideloading
       - name: Build iOS IPA
         run: |
-          flutter build ipa --release --no-codesign
+          flutter build ipa --release --no-codesign $VERSION_ARGS
           mkdir -p Payload
           # Copy whatever .app was built in the iOS archive into Payload
           cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app Payload/
@@ -138,6 +204,8 @@ jobs:
   # 5. Publish All to GitHub Releases
   # --------------------------------------------------------------------------
   publish-release:
+    # A manual run only builds; releases come from version tags.
+    if: github.ref_type == 'tag'
     needs: [build-android, build-windows, build-linux, build-apple]
     runs-on: ubuntu-latest
     steps:

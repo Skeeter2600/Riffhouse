@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:audio_service/audio_service.dart';
@@ -12,6 +13,8 @@ import '../widgets/add_to_playlist_sheet.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
+import '../services/favorites_store.dart';
 
 class PlayerScreen extends ConsumerStatefulWidget {
   const PlayerScreen({super.key});
@@ -39,10 +42,19 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     super.dispose();
   }
 
-  String _formatDuration(Duration d) {
-    final m = d.inMinutes;
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
+  Future<void> _toggleLike(JellyfinTrack track) async {
+    final service = ref.read(musicServiceProvider);
+    if (service == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    unawaited(_heartController.forward().then((_) {
+      if (mounted) _heartController.reverse();
+    }));
+    final saved = await FavoritesStore.toggle(service, track.id);
+    if (!saved) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text("Couldn't reach the server, so the like was not saved"),
+      ));
+    }
   }
 
   String? _artUrl(JellyfinTrack? track) {
@@ -50,7 +62,7 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
     if (track.id.startsWith('podcast_')) {
       return track.imageTag;
     }
-    final service = ref.read(jellyfinServiceProvider);
+    final service = ref.read(musicServiceProvider);
     if (service == null) return null;
     if (track.imageTag != null) {
       return service.getImageUrl(track.id, track.imageTag!);
@@ -282,11 +294,33 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                           ],
                         ),
                       ),
-                      IconButton(
-                        icon: const Icon(Icons.favorite_border_rounded,
-                            color: AppColors.accent, size: 28),
-                        onPressed: () {},
-                      ),
+                      // Podcast episodes cannot be liked on the server.
+                      if (track != null && !track.id.startsWith('podcast_'))
+                        ValueListenableBuilder<int>(
+                          valueListenable: FavoritesStore.revision,
+                          builder: (context, _, __) {
+                            final liked = FavoritesStore.isFavorite(track.id);
+                            return ScaleTransition(
+                              scale: Tween(begin: 1.0, end: 1.3).animate(
+                                CurvedAnimation(
+                                  parent: _heartController,
+                                  curve: Curves.easeOut,
+                                ),
+                              ),
+                              child: IconButton(
+                                tooltip: liked ? 'Unlike' : 'Like',
+                                icon: Icon(
+                                  liked
+                                      ? Icons.favorite_rounded
+                                      : Icons.favorite_border_rounded,
+                                  color: AppColors.accent,
+                                  size: 28,
+                                ),
+                                onPressed: () => _toggleLike(track),
+                              ),
+                            );
+                          },
+                        ),
                     ],
                   ),
                 ),
@@ -329,11 +363,11 @@ class _PlayerScreenState extends ConsumerState<PlayerScreen>
                           mainAxisAlignment:
                               MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(_formatDuration(position),
+                            Text(formatDuration(position),
                                 style: const TextStyle(
                                     color: AppColors.textMuted,
                                     fontSize: 12)),
-                            Text(_formatDuration(duration),
+                            Text(formatDuration(duration),
                                 style: const TextStyle(
                                     color: AppColors.textMuted,
                                     fontSize: 12)),

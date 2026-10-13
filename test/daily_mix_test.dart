@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile_music_player/models/daily_mix_config.dart';
-import 'package:mobile_music_player/models/jellyfin_models.dart';
+import 'package:riffhouse/models/daily_mix_config.dart';
+import 'package:riffhouse/models/jellyfin_models.dart';
 
 void main() {
   group('DailyMixConfig Tests', () {

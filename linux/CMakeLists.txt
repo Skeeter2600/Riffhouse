@@ -4,10 +4,13 @@ project(runner LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "mobile_music_player")
+set(BINARY_NAME "riffhouse")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
-set(APPLICATION_ID "com.example.mobile_music_player")
+# The application id also names the data folder under ~/.local/share. If it
+# changes again, add the old id to migrateLegacyDesktopData in
+# lib/utils/app_paths.dart so existing installs keep their data.
+set(APPLICATION_ID "com.riffhouse.Riffhouse")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.

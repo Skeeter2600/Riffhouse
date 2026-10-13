@@ -3,38 +3,63 @@
   
   # Riffhouse
   
-  **A native music streaming client for your self-hosted Jellyfin server**
+  **A native music streaming client for your self-hosted music server**
   
-  [![GitHub Release](https://img.shields.io/badge/release-v1.0-blue)](https://github.com/Skeeter2600/Riffhouse/releases)
+  [![GitHub Release](https://img.shields.io/github/v/release/Skeeter2600/Riffhouse)](https://github.com/Skeeter2600/Riffhouse/releases)
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![Flutter](https://img.shields.io/badge/Flutter-3.x-blue?logo=flutter)](https://flutter.dev)
-  [![Platform Support](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-brightgreen)](#platform-support)
+  [![Platform Support](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Windows%20%7C%20macOS%20%7C%20Linux-brightgreen)](#platform-notes)
+  [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/skeeter26)
 
 </div>
+
+<p align="center">
+  <img alt="Riffhouse: the library and the player, for Jellyfin, Emby and Navidrome / Subsonic" src="docs/images/hero.png" width="900" />
+</p>
 
 ---
 
 ## What is Riffhouse?
 
-Riffhouse is a lightweight, cross-platform music streaming client that connects to your **self-hosted Jellyfin media server**. No subscriptions, no tracking, no ads—just your music library, your way. Stream your personal collection anywhere, offline-first caching, integrated podcasts, and built-in Android Auto support.
+Riffhouse is a lightweight, cross-platform music streaming client that connects to your **self-hosted music server**: Jellyfin, Emby, or anything that speaks the Subsonic API (Navidrome, Gonic, Airsonic and others). No subscriptions, no tracking, no ads—just your music library, your way. Stream your personal collection anywhere, offline-first caching, integrated podcasts, and built-in Android Auto support.
 
-**Perfect for:** Anyone with a Jellyfin server who wants a native, feature-rich music app that works offline and feels at home on their device.
+**Perfect for:** Anyone running their own music server who wants a native, feature-rich music app that works offline and feels at home on their device.
+
+---
+
+## Screenshots
+
+<p align="center">
+  <img alt="Liked Songs, the player, crossfade settings and downloads" src="docs/images/features.png" width="900" />
+</p>
+
+<p align="center">
+  <img alt="Android Auto now-playing screen with shuffle, repeat and like buttons" src="docs/images/android-auto.png" width="900" />
+</p>
+
+<p align="center">
+  <img alt="Browsing mixes, playlists and albums in Android Auto" src="docs/images/android-auto-browse.png" width="560" />
+</p>
 
 ---
 
 ## Table of Contents
 
+- [Screenshots](#screenshots)
 - [Quick Start](#quick-start)
 - [Features](#features)
 - [Installation](#installation)
   - [Pre-built Downloads](#pre-built-downloads)
+  - [Updating](#updating)
   - [iOS Sideloading](#ios-sideloading)
 - [Building from Source](#building-from-source)
 - [Configuration](#configuration)
+  - [Supported Servers](#supported-servers)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
+- [Support](#support)
 - [License](#license)
 
 ---
@@ -44,8 +69,8 @@ Riffhouse is a lightweight, cross-platform music streaming client that connects 
 1. **Download** the latest [release](https://github.com/Skeeter2600/Riffhouse/releases) for your platform
 2. **Install** using the instructions below
 3. **Launch** Riffhouse
-4. **Enter** your Jellyfin server URL (e.g., `https://jellyfin.yourdomain.com`)
-5. **Log in** with your Jellyfin credentials
+4. **Choose** your server type and enter its URL (e.g., `https://music.yourdomain.com`)
+5. **Log in** with your account on that server
 6. **Start streaming** your library instantly
 
 Done! Your playlists, artists, and albums sync automatically.
@@ -55,13 +80,17 @@ Done! Your playlists, artists, and albums sync automatically.
 ## Features
 
 ### Core Streaming
-- 🎵 **Full Jellyfin Integration** — Stream your entire music library with full artist, album, and playlist support
+- 🎵 **Jellyfin, Emby and Subsonic Servers** — Stream your entire music library with full artist, album, and playlist support (see [Supported Servers](#supported-servers))
 - 📱 **Cross-Platform** — Native apps for Android, iOS, Windows, macOS, and Linux
 - 🔄 **Persistent Playback** — Background audio service with lock-screen controls and persistent notifications
 
 ### Offline & Caching
-- 💾 **Offline Playback** — Download albums and tracks to listen without internet
-- ⚡ **Smart Caching** — Automatic metadata caching for offline library browsing
+- 💾 **Offline Playback** — Download playlists, albums or single tracks; downloads resume where they stopped, can be cancelled, and can be limited to Wi-Fi or a storage budget
+- ⚡ **Offline Browsing** — Albums, artists and playlists you've opened stay browsable without a connection
+- 🔁 **Server Sync** — Plays are reported back to your server (and queued while offline), so play counts match across your clients
+- ❤️ **Liked Songs** — Like a track from the player, the notification or the car; likes are saved as favorites on your server and collected in a Liked Songs playlist
+- 🎚️ **Crossfade** — Radio-style fades between songs, from 1 to 12 seconds
+- 🗄️ **Backup & Restore** — Save your play history, stats, mixes and podcast subscriptions to a file
 
 ### Discovery & Organization
 - 🎼 **Smart Mixes** — Daily Mixes, Heavy Rotation, and Undiscovered Tracks based on your listening habits
@@ -69,7 +98,7 @@ Done! Your playlists, artists, and albums sync automatically.
 - 📊 **Queue Management** — Full reorderable queue with persistent controls
 
 ### Mobile & Automotive
-- 🚗 **Android Auto Integration** — Native automotive UI with safe controls and queue browsing
+- 🚗 **Android Auto Integration** — Browse mixes, playlists, albums and Liked Songs, with shuffle, repeat and like buttons on the now-playing screen
 - 🔒 **Lock Screen Controls** — Quick playback controls directly from your device lock screen
 
 ---
@@ -85,7 +114,7 @@ All releases are available on the [GitHub Releases](https://github.com/Skeeter26
 | **Android** | `Riffhouse-Android.apk` | Download and tap to install. Allow installation from your browser if prompted. |
 | **Windows** | `Riffhouse-Windows-x64.zip` | Extract and run `Riffhouse.exe`. Windows Defender SmartScreen may appear—click "Run anyway." |
 | **macOS** | `Riffhouse-macOS.zip` | Extract and drag `Riffhouse.app` to `/Applications`. If Gatekeeper blocks it, right-click → **Open**. |
-| **Linux** | `Riffhouse-Linux-x64.tar.gz` | Extract: `tar -xvf Riffhouse-Linux-x64.tar.gz && ./riffhouse` |
+| **Linux** | `Riffhouse-Linux-x64.tar.gz` | Extract into its own folder and run: `mkdir riffhouse && tar -xzf Riffhouse-Linux-x64.tar.gz -C riffhouse && ./riffhouse/riffhouse` |
 | **iOS** | `Riffhouse.ipa` | See [iOS Sideloading](#ios-sideloading) below. |
 
 #### Platform Notes
@@ -93,6 +122,18 @@ All releases are available on the [GitHub Releases](https://github.com/Skeeter26
 - **Android:** Works best on Android 8.0+. Android Auto requires Android 5.0+.
 - **iOS:** Requires personal Apple ID for sideloading (free). Certificate refreshes every 7 days with AltStore.
 - **Windows/macOS:** First launch may take 10–15 seconds on initial startup.
+
+---
+
+### Updating
+
+Riffhouse checks GitHub for a new release when it starts. You can turn this off, or check by hand, under **Settings → Updates**.
+
+| Platform | How updates arrive |
+|----------|--------------------|
+| **Android** | Downloaded in the app; Android asks you to confirm the install. The first time, you'll be asked to allow Riffhouse to install apps. |
+| **Windows / Linux** | Downloaded in the app; **Install & restart** swaps the files and reopens Riffhouse. This needs the app to live in a folder you can write to (not `Program Files` or `/usr`). |
+| **macOS / iOS** | The app tells you a release is available and links to it; install it the same way as the first time. |
 
 ---
 
@@ -157,10 +198,12 @@ flutter build apk --release
 # Output: build/app/outputs/flutter-apk/app-release.apk
 ```
 
+> Android only installs an update over an existing app when both are signed with the same key. Official releases are signed with the project's release key, which is not in the repository; a build you make yourself is signed with your debug key, so it cannot be installed over an official release (or the other way round) without uninstalling first. To sign with your own key, create `android/key.properties` with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`.
+
 **Windows:**
 ```bash
 flutter build windows --release
-# Output: build/windows/x64/runner/Release/
+# Output: build/windows/x64/runner/Release/Riffhouse.exe
 ```
 
 **macOS:**
@@ -172,14 +215,14 @@ flutter build macos --release
 **Linux:**
 ```bash
 flutter build linux --release
-# Output: build/linux/x64/release/bundle/
+# Output: build/linux/x64/release/bundle/riffhouse
 ```
 
 **iOS (Sideloadable IPA):**
 ```bash
 flutter build ipa --release --no-codesign
 mkdir -p Payload
-cp -r build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app Payload/
+cp -r build/ios/archive/Runner.xcarchive/Products/Applications/*.app Payload/
 zip -r Riffhouse.ipa Payload
 ```
 
@@ -189,15 +232,28 @@ zip -r Riffhouse.ipa Payload
 
 ### First Launch
 
-1. Enter your **Jellyfin Server URL** (e.g., `https://jellyfin.example.com`)
-2. Log in with your Jellyfin username & password
+1. Pick your **server type**: Jellyfin, Emby, or Navidrome / Subsonic
+2. Enter the **server URL** (e.g., `https://music.example.com`) and log in with your username & password on that server
 3. Your libraries sync automatically in the background
 
-### Optional Settings
+### Settings
 
-- **Cache Limit** — Set how much local storage to use for offline downloads
-- **Audio Quality** — Choose between high-quality and mobile-friendly bitrates
-- **Server URL** — Change servers anytime in Settings
+- **Gapless Playback / Crossfade** — Choose how one song runs into the next
+- **Report Plays to Server** — Keep your server's play counts and last-played dates up to date
+- **Downloads** — See what is stored offline, prune the temporary cache or clear everything; optionally download on Wi-Fi only and set a storage limit
+- **Backup** — Save or restore the listening data that exists only on this device
+- **Automatic Updates** — Check for and download new releases on launch
+- **Disconnect** — Sign out to connect to a different server or user
+
+### Supported Servers
+
+| Server type | Works with | Usual port | Notes |
+|-------------|------------|------------|-------|
+| **Jellyfin** | Jellyfin | 8096 | |
+| **Emby** | Emby | 8096 | Shares Jellyfin's API. |
+| **Navidrome / Subsonic** | Navidrome, Gonic, Airsonic, LMS, Ampache, Funkwhale, Nextcloud Music and other Subsonic or OpenSubsonic servers | 4533 (Navidrome) | Your password is not stored; a salted token is. The API has no call for setting a playlist cover, so a custom cover is saved on the device you set it on and is not shown on your other devices. |
+
+Riffhouse connects to one server at a time. To switch, use **Settings → Disconnect** and sign in to the other one. Play history is recorded per track on the server it was played from, so it does not carry over between servers.
 
 ---
 
@@ -206,7 +262,7 @@ zip -r Riffhouse.ipa Payload
 | Component | Technology |
 |-----------|------------|
 | **Framework** | [Flutter](https://flutter.dev/) (Dart) |
-| **Media Backend** | [Jellyfin REST API](https://jellyfin.org/) |
+| **Media Backends** | [Jellyfin](https://jellyfin.org/) and [Emby](https://emby.media/) REST APIs, [Subsonic / OpenSubsonic](https://opensubsonic.netlify.app/) API |
 | **State Management** | Riverpod / Provider pattern |
 | **Local Database** | Drift / SQLite (offline metadata, caching) |
 | **Audio Engine** | Flutter Audio Background Service with lock screen & automotive controls |
@@ -219,14 +275,37 @@ zip -r Riffhouse.ipa Payload
 lib/
 ├── audio/          # Background playback, queue, Android Auto integration
 ├── database/       # SQLite schema, DAOs, generated bindings
-├── models/         # Jellyfin data models, podcasts, mix configs
+├── models/         # Library data models, podcasts, mix configs
 ├── providers/      # State management (Auth, Library, Podcasts, Database)
 ├── router/         # Navigation routing
 ├── screens/        # UI screens (Player, Library, Playlists, Settings)
-├── services/       # API clients (Jellyfin, Podcasts, Cache, Playlists)
+├── services/       # Server clients (Jellyfin/Emby, Subsonic), podcasts, cache, playlists
 ├── theme/          # Theming, colors, typography
+├── utils/          # Formatting and logging helpers
 └── widgets/        # Reusable components (MiniPlayer, AlbumCard, etc.)
 ```
+
+---
+
+## Troubleshooting
+
+**Android says "App not installed" when updating.**
+The installed copy and the update are signed with different keys. Releases up to v1.1.0 were each signed with a throwaway key, so they cannot be updated in place: uninstall Riffhouse once, then install the latest APK from the [releases page](https://github.com/Skeeter2600/Riffhouse/releases). Your library lives on your Jellyfin server, but uninstalling erases what is stored only on the device: play history, listening stats, mix settings, podcast subscriptions and downloads. Those early releases have no backup option, so that data cannot be carried over from them. From v1.1.1 on, updates install in place, and **Settings → Backup** lets you save that data to a file before any reinstall.
+
+**"Update available" keeps showing a release link instead of installing (Windows/Linux).**
+The app can only replace its own files in a folder you can write to. Move the Riffhouse folder somewhere under your user profile or home directory.
+
+**Moving to a new phone, or reinstalling.**
+Use **Settings → Backup → Back Up Listening Data** on the old install, then **Restore from Backup** on the new one after signing in. The backup holds play history, stats, mix settings and podcast subscriptions. It does not hold your sign-in or downloaded audio; download those again.
+
+**Can't sign in.**
+Check that the server URL includes `http://` or `https://` and the port if your server uses one (for example `http://192.168.1.20:8096`), and that the address opens in a browser on the same device.
+
+**Android Auto doesn't show Riffhouse.**
+Sideloaded apps are hidden by default. In the Android Auto settings on your phone, tap the version number repeatedly to enable developer mode, then turn on **Unknown sources** in the developer settings.
+
+**The iOS app stops opening after a week.**
+Apps sideloaded with a free Apple ID expire after 7 days. Refresh it with Sideloadly, AltStore or SideStore.
 
 ---
 
@@ -243,6 +322,14 @@ We'd love your help! Whether it's bug reports, feature requests, or code contrib
 - Run tests with `flutter test`
 - Code style follows Dart conventions (enforced by `dart format`)
 - For Android Auto features, test on a real device or emulator with Google Play Services
+
+---
+
+## Support
+
+Riffhouse is free and built in my spare time. If it's earned a spot on your home screen and you'd like to help keep it going, you can buy me a coffee:
+
+<a href="https://buymeacoffee.com/skeeter26"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="50" /></a>
 
 ---
 

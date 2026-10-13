@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile_music_player/models/jellyfin_models.dart';
-import 'package:mobile_music_player/providers/auth_provider.dart';
-import 'package:mobile_music_player/providers/download_provider.dart';
-import 'package:mobile_music_player/providers/library_provider.dart';
-import 'package:mobile_music_player/services/jellyfin_service.dart';
-import 'package:mobile_music_player/theme/app_theme.dart';
+import 'package:riffhouse/models/jellyfin_models.dart';
+import 'package:riffhouse/providers/auth_provider.dart';
+import 'package:riffhouse/providers/download_provider.dart';
+import 'package:riffhouse/providers/library_provider.dart';
+import 'package:riffhouse/services/jellyfin_service.dart';
+import 'package:riffhouse/theme/app_theme.dart';
 
 void main() {
   group('Search and Filter Tests', () {
@@ -170,7 +170,7 @@ void main() {
       expect(isExcludedRecentlyPlayedMix(mixType: null, id: 'alb_1', title: 'Album 1'), isFalse);
     });
 
-    test('jellyfinServiceProvider re-evaluates and notifies listeners when authProvider updates', () {
+    test('musicServiceProvider re-evaluates and notifies listeners when authProvider updates', () {
       final container = ProviderContainer(
         overrides: [
           authProvider.overrideWith((ref) => _FakeAuthNotifier()),
@@ -178,7 +178,7 @@ void main() {
       );
 
       // Initially not logged in
-      expect(container.read(jellyfinServiceProvider), isNull);
+      expect(container.read(musicServiceProvider), isNull);
 
       // Log in / restore session
       final fakeNotifier = container.read(authProvider.notifier) as _FakeAuthNotifier;
@@ -188,8 +188,8 @@ void main() {
         fakeService,
       );
 
-      // jellyfinServiceProvider must now resolve to fakeService
-      expect(container.read(jellyfinServiceProvider), equals(fakeService));
+      // musicServiceProvider must now resolve to fakeService
+      expect(container.read(musicServiceProvider), equals(fakeService));
     });
   });
 
@@ -251,12 +251,12 @@ void main() {
 class _FakeAuthNotifier extends StateNotifier<JellyfinUser?> implements AuthNotifier {
   _FakeAuthNotifier() : super(null);
 
-  JellyfinService? _service;
+  MusicService? _service;
 
   @override
-  JellyfinService? get jellyfinService => _service;
+  MusicService? get musicService => _service;
 
-  void setUser(JellyfinUser user, JellyfinService service) {
+  void setUser(JellyfinUser user, MusicService service) {
     _service = service;
     state = user;
   }

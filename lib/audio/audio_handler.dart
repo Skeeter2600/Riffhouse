@@ -1,3 +1,7 @@
+// ConcatenatingAudioSource still works in just_audio 0.10 and the queue
+// reordering here is built on it; moving to the playlist API is a separate job.
+// ignore_for_file: deprecated_member_use
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -15,6 +19,7 @@ import 'package:drift/drift.dart';
 import '../database/app_database.dart';
 import '../models/jellyfin_models.dart';
 import '../services/cache_service.dart';
+import '../services/favorites_store.dart';
 import '../services/jellyfin_service.dart';
 import '../services/playlist_service.dart';
 import '../providers/library_provider.dart';
@@ -23,6 +28,7 @@ import 'queue_order.dart';
 import '../services/podcast_service.dart';
 import '../models/podcast_episode.dart';
 import '../models/podcast_feed.dart';
+import '../utils/playback_diagnostics.dart';
 
 /// Audio handler that integrates just_audio with audio_service, providing
 /// background playback, media notifications, and Android Auto support.
@@ -60,11 +66,39 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   static const _gaplessPrefKey = 'playback_gapless_enabled';
   static const _crossfadePrefKey = 'playback_crossfade_enabled';
 
-  /// Length of the overlap between two tracks when crossfade is on.
-  static const crossfadeDuration = Duration(seconds: 2);
+  static const _crossfadeSecondsPrefKey = 'playback_crossfade_seconds';
 
-  /// How long before the overlap the outgoing track is primed on [_fadePlayer].
-  static const _crossfadePrepareLead = Duration(seconds: 10);
+  /// Shortest, longest and default crossfade the user can choose.
+  static const minCrossfadeSeconds = 1;
+  static const maxCrossfadeSeconds = 12;
+  static const defaultCrossfadeSeconds = 2;
+
+  /// How long before the overlap the outgoing track is primed on
+  /// [_fadePlayer], so it is loaded and buffered when the fade starts.
+  static const _crossfadePrepareLead = Duration(seconds: 8);
+
+  /// How far the two players may be apart at the hand-over before the fade
+  /// player is moved to match.
+  static const _crossfadeSyncTolerance = Duration(milliseconds: 250);
+
+  int _crossfadeSeconds = defaultCrossfadeSeconds;
+
+  /// Length of the overlap between two tracks when crossfade is on.
+  int get crossfadeSeconds => _crossfadeSeconds;
+  Duration get crossfadeDuration => Duration(seconds: _crossfadeSeconds);
+
+  /// Volumes of the two tracks [elapsed] into a crossfade of [length]: the
+  /// outgoing one falls from full to silent in a straight line while the
+  /// incoming one rises from silent to full, as on the radio.
+  static ({double incoming, double outgoing}) crossfadeVolumes(
+    Duration elapsed,
+    Duration length,
+  ) {
+    if (length <= Duration.zero) return (incoming: 1.0, outgoing: 0.0);
+    final t =
+        (elapsed.inMicroseconds / length.inMicroseconds).clamp(0.0, 1.0);
+    return (incoming: t, outgoing: 1.0 - t);
+  }
 
   /// When on, the next track is downloaded ahead of time so the hand-over has
   /// no buffering pause. (The queue itself is always one continuous source.)
@@ -86,11 +120,45 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   /// Bumped to abandon a crossfade in progress (pause, skip, new queue...).
   int _fadeToken = 0;
+
+  /// Fires at the moment the overlap is due to begin.
+  Timer? _fadeTimer;
+
+  /// Where in the outgoing track [_fadePlayer] is parked.
+  Duration _fadeStartPosition = Duration.zero;
   bool _crossfading = false;
 
   /// Id of the track the index listener last handled, used to drop the echo
   /// of a reorder (same track, already-known index).
   String? _activeTrackId;
+
+  // ---- Diagnostics (see [PlaybackDiagnostics]) ------------------------------
+
+  /// Where the current track was at the last position tick, so a track
+  /// change can report how much of the previous song was left.
+  Duration _lastPosition = Duration.zero;
+  Duration? _lastDuration;
+  String? _lastTrackName;
+
+  /// When the user (or the app on their behalf) last skipped, sought, paused
+  /// or started a new queue.
+  DateTime _lastTransportAction = DateTime.fromMillisecondsSinceEpoch(0);
+
+  String? _lastLoggedMainState;
+  String? _lastLoggedFadeState;
+  bool _volumeWarned = false;
+  String? _fadeSkipLoggedFor;
+
+  void _diag(String message) => PlaybackDiagnostics.log(message);
+
+  /// One-line description of what [player] is doing right now.
+  String _snapshot(AudioPlayer player) =>
+      'pos=${PlaybackDiagnostics.time(player.position)}'
+      '/${PlaybackDiagnostics.time(player.duration)} '
+      'buffered=${PlaybackDiagnostics.time(player.bufferedPosition)} '
+      'state=${player.processingState.name} '
+      'playing=${player.playing} '
+      'vol=${player.volume.toStringAsFixed(2)}';
 
   List<JellyfinTrack> get currentQueue => List<JellyfinTrack>.unmodifiable(_queue);
   int get currentIndex => _currentIndex;
@@ -118,15 +186,19 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   })  : _player = AudioPlayer(),
         _cacheService = cacheService,
         _playlistService = playlistService {
-    final svc = playlistService.jellyfinService;
+    final svc = playlistService.musicService;
     _autoHandler = AndroidAutoHandler(
-      serverUrl: svc.serverUrl,
-      accessToken: svc.accessToken,
+      service: svc,
       getCachedArtPath: (url) => _artCache[url],
       requestArtDownload: (url, parentId) => _requestArtDownload(url, parentId),
       toContentUri: (path) => _toContentUri(path),
     );
     _setupListeners();
+    // Redraw the heart in Android Auto and the notification when a like
+    // changes, wherever it was changed.
+    FavoritesStore.revision.addListener(_emitPlaybackState);
+    FavoritesStore.revision
+        .addListener(() => _notifyChildrenChanged(kRootPlaylists));
     _loadPlaybackSettings();
     _loadSavedCredentials();
     _initAudioSession();
@@ -135,6 +207,15 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   Future<void> _initAudioSession() async {
     final session = await AudioSession.instance;
     await session.configure(const AudioSessionConfiguration.music());
+    // Another app or the system taking the audio away looks just like a song
+    // being cut short, so record it.
+    session.interruptionEventStream.listen((event) {
+      _diag('AUDIO FOCUS ${event.begin ? 'lost' : 'regained'} '
+          '(${event.type.name}) main[${_snapshot(_player)}]');
+    });
+    session.becomingNoisyEventStream.listen((_) {
+      _diag('AUDIO OUTPUT removed (headphones unplugged / disconnected)');
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -146,6 +227,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     _player.playbackEventStream.listen(
       _handlePlaybackEvent,
       onError: (Object e, StackTrace st) {
+        PlaybackDiagnostics.failed(
+            'main player error: $e main[${_snapshot(_player)}]');
         // Surface errors without crashing the handler.
         playbackState.add(playbackState.value.copyWith(
           processingState: AudioProcessingState.error,
@@ -159,6 +242,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       if (index != null && index < _queue.length) {
         final trackId = _queue[index].id;
         if (index == _currentIndex && trackId == _activeTrackId) return;
+        _logTrackChange(index);
         _activeTrackId = trackId;
         _currentIndex = index;
         _currentTrackCountedAsListen = false;
@@ -194,6 +278,12 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     // Re-emit playback state whenever the player state changes (play/pause/
     // buffering transitions).
     _player.playerStateStream.listen((state) {
+      final described =
+          '${state.processingState.name}/${state.playing ? 'playing' : 'paused'}';
+      if (described != _lastLoggedMainState) {
+        _lastLoggedMainState = described;
+        _diag('MAIN -> $described [${_snapshot(_player)}]');
+      }
       _emitPlaybackState();
       // Save state immediately on play/pause transition!
       unawaited(_savePlaybackState());
@@ -220,6 +310,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     // Save position periodically and count listen if threshold is met
     _player.positionStream.listen((pos) {
       _savePlaybackPosition(pos);
+      _checkPlaybackHealth(pos);
       _maybeCrossfade(pos);
 
       // Check listen threshold for music tracks:
@@ -249,6 +340,84 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         }
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Diagnostics
+  // ---------------------------------------------------------------------------
+
+  /// Records a move to queue item [index] and checks that the song before
+  /// it was not cut short.
+  void _logTrackChange(int index) {
+    final sinceAction = DateTime.now().difference(_lastTransportAction);
+    final reason = _crossfading
+        ? 'crossfade'
+        : sinceAction < const Duration(seconds: 3)
+            ? 'skip / seek / new queue'
+            : 'reached its end';
+    final previous = _lastTrackName;
+    final duration = _lastDuration;
+    if (previous != null) {
+      _diag('TRACK CHANGE ($reason): "$previous" left at '
+          '${PlaybackDiagnostics.time(_lastPosition)}'
+          '/${PlaybackDiagnostics.time(duration)} '
+          '-> #$index "${_queue[index].name}"');
+      if (reason == 'reached its end' && duration != null) {
+        final unplayed = duration - _lastPosition;
+        if (unplayed > const Duration(milliseconds: 1500)) {
+          PlaybackDiagnostics.failed(
+              '"$previous" stopped ${PlaybackDiagnostics.time(unplayed)} '
+              'before its end with no skip, seek or crossfade');
+        }
+      }
+    } else {
+      _diag('TRACK START: #$index "${_queue[index].name}"');
+    }
+    _lastTrackName = _queue[index].name;
+    _lastPosition = Duration.zero;
+    _lastDuration = null;
+    _volumeWarned = false;
+    _fadeSkipLoggedFor = null;
+  }
+
+  /// Runs on every position tick.
+  void _checkPlaybackHealth(Duration pos) {
+    if (_reordering) return;
+    _lastPosition = pos;
+    _lastDuration = _player.duration ?? _lastDuration;
+
+    // Only a crossfade may turn the main player down.
+    if (!_crossfading && !_volumeWarned && _player.volume < 0.99) {
+      _volumeWarned = true;
+      PlaybackDiagnostics.failed('main player volume is '
+          '${_player.volume.toStringAsFixed(2)} outside a crossfade '
+          '[${_snapshot(_player)}]');
+    }
+  }
+
+  /// After the second player has loaded, makes sure the main one is still
+  /// playing: on some devices two players cannot share the audio output.
+  Future<void> _checkMainSurvivedFadeLoad(String trackName) async {
+    const window = Duration(milliseconds: 1500);
+    final before = _player.position;
+    final wasPlaying = _player.playing;
+    await Future.delayed(window);
+    if (!wasPlaying || !_player.playing || _crossfading) return;
+    if (_queue.isEmpty ||
+        _currentIndex >= _queue.length ||
+        _queue[_currentIndex].name != trackName) {
+      return;
+    }
+    final advanced = _player.position - before;
+    if (advanced < const Duration(milliseconds: 700)) {
+      PlaybackDiagnostics.failed(
+          'main player stopped advancing after the second player loaded '
+          '(moved ${advanced.inMilliseconds} ms in ${window.inMilliseconds} ms) '
+          'main[${_snapshot(_player)}]');
+    } else {
+      _diag('XFADE check ok: main still advancing after second player loaded '
+          '(${advanced.inMilliseconds} ms in ${window.inMilliseconds} ms)');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -427,8 +596,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     await _player.play();
   }
 
-  void updateAndroidAutoCredentials(String url, String token) {
-    _autoHandler.updateCredentials(url, token);
+  void updateAndroidAutoService(MusicService service) {
+    _autoHandler.updateService(service);
   }
 
   void updateAndroidAutoLibrary({
@@ -466,11 +635,15 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     }
 
     // Dynamic background loading for playlist/album tracks if not cached
-    if (parentMediaId.startsWith(kPrefixPlaylist)) {
+    if (parentMediaId == kLikedSongsContainer) {
+      // Built from the likes each time it is opened, so it is never stale.
+      _autoHandler.updateContainer(
+          parentMediaId, FavoritesStore.likedTracks(await _getLibraryTracks()));
+    } else if (parentMediaId.startsWith(kPrefixPlaylist)) {
       final playlistId = parentMediaId.substring(kPrefixPlaylist.length);
       if (!_autoHandler.hasContainer(parentMediaId)) {
         try {
-          final tracks = await _playlistService.jellyfinService.getPlaylistTracks(playlistId);
+          final tracks = await _playlistService.musicService.getPlaylistTracks(playlistId);
           _autoHandler.updateContainer(parentMediaId, tracks);
           _notifyChildrenChanged(parentMediaId);
         } catch (_) {
@@ -481,7 +654,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final albumId = parentMediaId.substring(kPrefixAlbum.length);
       if (!_autoHandler.hasContainer(parentMediaId)) {
         try {
-          final tracks = await _playlistService.jellyfinService.getAlbumTracks(albumId);
+          final tracks = await _playlistService.musicService.getAlbumTracks(albumId);
           _autoHandler.updateContainer(parentMediaId, tracks);
           _notifyChildrenChanged(parentMediaId);
         } catch (_) {
@@ -510,6 +683,98 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     Map<String, dynamic>? extras,
   ]) async {
     return _autoHandler.searchLocal(query);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Extra media controls (Android Auto, notification, lock screen)
+  // ---------------------------------------------------------------------------
+
+  static const actionToggleShuffle = 'riffhouse.toggle_shuffle';
+  static const actionCycleRepeat = 'riffhouse.cycle_repeat';
+  static const actionToggleFavorite = 'riffhouse.toggle_favorite';
+
+  /// The repeat button steps through off, repeat all, repeat one.
+  static AudioServiceRepeatMode nextRepeatMode(AudioServiceRepeatMode mode) {
+    switch (mode) {
+      case AudioServiceRepeatMode.none:
+        return AudioServiceRepeatMode.all;
+      case AudioServiceRepeatMode.all:
+      case AudioServiceRepeatMode.group:
+        return AudioServiceRepeatMode.one;
+      case AudioServiceRepeatMode.one:
+        return AudioServiceRepeatMode.none;
+    }
+  }
+
+  AudioServiceRepeatMode get _repeatMode => switch (_player.loopMode) {
+        LoopMode.off => AudioServiceRepeatMode.none,
+        LoopMode.one => AudioServiceRepeatMode.one,
+        LoopMode.all => AudioServiceRepeatMode.all,
+      };
+
+  /// The music track playing now, or null for podcasts and an empty queue
+  /// (which cannot be liked).
+  JellyfinTrack? get _likeableTrack {
+    if (_queue.isEmpty || _currentIndex >= _queue.length) return null;
+    final track = _queue[_currentIndex];
+    return track.id.startsWith('podcast_') ? null : track;
+  }
+
+  /// Buttons shown next to previous / play / next where there is room.
+  List<MediaControl> get _extraControls {
+    final repeat = _repeatMode;
+    final likeable = _likeableTrack;
+    final liked = likeable != null && FavoritesStore.isFavorite(likeable.id);
+    return [
+      MediaControl.custom(
+        androidIcon:
+            _shuffleEnabled ? 'drawable/ic_shuffle_on' : 'drawable/ic_shuffle_off',
+        label: _shuffleEnabled ? 'Shuffle is on' : 'Shuffle is off',
+        name: actionToggleShuffle,
+      ),
+      MediaControl.custom(
+        androidIcon: switch (repeat) {
+          AudioServiceRepeatMode.one => 'drawable/ic_repeat_one',
+          AudioServiceRepeatMode.none => 'drawable/ic_repeat_off',
+          _ => 'drawable/ic_repeat_all',
+        },
+        label: switch (repeat) {
+          AudioServiceRepeatMode.one => 'Repeating this song',
+          AudioServiceRepeatMode.none => 'Repeat is off',
+          _ => 'Repeating all',
+        },
+        name: actionCycleRepeat,
+      ),
+      if (likeable != null)
+        MediaControl.custom(
+          androidIcon:
+              liked ? 'drawable/ic_favorite_on' : 'drawable/ic_favorite_off',
+          label: liked ? 'Liked' : 'Like',
+          name: actionToggleFavorite,
+        ),
+    ];
+  }
+
+  @override
+  Future<dynamic> customAction(String name,
+      [Map<String, dynamic>? extras]) async {
+    switch (name) {
+      case actionToggleShuffle:
+        await setShuffleMode(_shuffleEnabled
+            ? AudioServiceShuffleMode.none
+            : AudioServiceShuffleMode.all);
+      case actionCycleRepeat:
+        await setRepeatMode(nextRepeatMode(_repeatMode));
+      case actionToggleFavorite:
+        final track = _likeableTrack;
+        if (track != null) {
+          await FavoritesStore.toggle(_playlistService.musicService, track.id);
+        }
+      default:
+        return super.customAction(name, extras);
+    }
+    _emitPlaybackState();
+    return null;
   }
 
   @override
@@ -626,7 +891,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     if (nextTrack.id.startsWith('podcast_')) return; // Skip prefetching for podcast episodes
     final isCached = _cacheService.isTrackCachedSync(nextTrack.jellyfinId);
     if (!isCached) {
-      final streamUrl = _playlistService.jellyfinService.getStreamUrl(nextTrack.jellyfinId);
+      final streamUrl = _playlistService.musicService.getStreamUrl(nextTrack.jellyfinId);
       // Fire-and-forget: start downloading without blocking playback.
       unawaited(_cacheService.downloadTrack(nextTrack.jellyfinId, streamUrl));
     }
@@ -641,9 +906,14 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final prefs = await SharedPreferences.getInstance();
       _gaplessEnabled = prefs.getBool(_gaplessPrefKey) ?? true;
       _crossfadeEnabled = prefs.getBool(_crossfadePrefKey) ?? false;
+      _crossfadeSeconds = (prefs.getInt(_crossfadeSecondsPrefKey) ??
+              defaultCrossfadeSeconds)
+          .clamp(minCrossfadeSeconds, maxCrossfadeSeconds);
     } catch (_) {
       // Keep defaults
     }
+    _diag('SETTINGS crossfade=${_crossfadeEnabled ? 'on' : 'off'} '
+        'length=${_crossfadeSeconds}s gapless=${_gaplessEnabled ? 'on' : 'off'}');
   }
 
   /// Turns pre-loading of the next track on or off.
@@ -661,6 +931,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   /// Turns the [crossfadeDuration] overlap between songs on or off.
   Future<void> setCrossfadeEnabled(bool enabled) async {
     _crossfadeEnabled = enabled;
+    _diag('SETTINGS crossfade turned ${enabled ? 'on' : 'off'}');
     if (!enabled) await _cancelCrossfade();
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -670,9 +941,42 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     }
   }
 
-  /// Called on every position tick. Shortly before the end of a song it
-  /// primes [_fadePlayer] with that song, and [crossfadeDuration] before the
-  /// end it starts the overlap.
+  /// Sets how many seconds two songs overlap.
+  Future<void> setCrossfadeSeconds(int seconds) async {
+    _crossfadeSeconds =
+        seconds.clamp(minCrossfadeSeconds, maxCrossfadeSeconds);
+    _diag('SETTINGS crossfade length set to ${_crossfadeSeconds}s');
+    // Anything already primed was parked for the old length.
+    await _cancelCrossfade();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_crossfadeSecondsPrefKey, _crossfadeSeconds);
+    } catch (_) {
+      // Ignore error
+    }
+  }
+
+  // How the crossfade works
+  //
+  // [_player] owns the queue, so it has to be the one that moves on to the
+  // next song. The overlap therefore plays the END of the outgoing song on a
+  // second player:
+  //
+  //  1. A few seconds before the overlap, [_fadePlayer] loads the outgoing
+  //     song and parks, paused, exactly where the overlap will begin.
+  //  2. A timer fires when [_player] reaches that same point. [_fadePlayer]
+  //     starts playing from where it is parked: no seek, so no pause to
+  //     rebuffer. Once it is audibly running, [_player] is silenced and
+  //     skips to the next song.
+  //  3. Over the fade length [_fadePlayer] (the old song's last seconds)
+  //     goes from full volume to silent while [_player] (the new song) goes
+  //     from silent to full.
+  //
+  // If the second player is not ready or does not start, nothing is touched
+  // and the song simply plays to its end.
+
+  /// Called on every position tick. Primes the fade player shortly before
+  /// the overlap and schedules the overlap itself.
   void _maybeCrossfade(Duration pos) {
     if (!_crossfadeEnabled || _crossfading || _reordering) return;
     if (!_player.playing || _player.loopMode == LoopMode.one) return;
@@ -681,87 +985,286 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
     final current = _queue[_currentIndex];
     final next = _queue[_currentIndex + 1];
+
+    void skip(String why) {
+      if (_fadeSkipLoggedFor == current.id) return;
+      _fadeSkipLoggedFor = current.id;
+      _diag('XFADE not used for "${current.name}": $why');
+    }
+
     // Spoken-word episodes are never blended into music or each other, and
     // their "listened" state relies on reaching the real end of the episode.
-    if (current.id.startsWith('podcast_') || next.id.startsWith('podcast_')) return;
+    if (current.id.startsWith('podcast_') || next.id.startsWith('podcast_')) {
+      return skip('podcast episode');
+    }
 
+    final fadeLength = crossfadeDuration;
     final duration = _player.duration;
-    if (duration == null || duration < const Duration(seconds: 20)) return;
+    // Very short tracks (skits, interludes) are left alone.
+    if (duration == null) return;
+    if (duration < const Duration(seconds: 20) || duration < fadeLength * 4) {
+      return skip('track is too short '
+          '(${PlaybackDiagnostics.time(duration)} for a ${_crossfadeSeconds}s fade)');
+    }
 
     final remaining = duration - pos;
-    if (remaining <= crossfadeDuration) {
-      if (remaining > const Duration(milliseconds: 500) &&
-          _fadeReadyFor == current.id) {
-        unawaited(_runCrossfade(pos));
+    if (remaining <= fadeLength) {
+      // Too late to start one cleanly.
+      if (_fadeTimer == null) {
+        skip('not ready in time (second player '
+            '${_fadeReadyFor == current.id ? 'ready' : _fadePreparingFor == current.id ? 'still loading' : 'never started loading'})');
       }
-    } else if (remaining <= _crossfadePrepareLead &&
+      return;
+    }
+
+    if (_fadeReadyFor == current.id) {
+      // Schedule against the clock rather than waiting for the next tick,
+      // which could be a fifth of a second late.
+      if (_fadeTimer == null) {
+        final wait = remaining - fadeLength;
+        _diag('XFADE scheduled in ${wait.inMilliseconds} ms for '
+            '"${current.name}" -> "${next.name}" main[${_snapshot(_player)}]');
+        _fadeTimer = Timer(wait, () {
+          _fadeTimer = null;
+          unawaited(_runCrossfade(current.id, fadeLength));
+        });
+      }
+    } else if (remaining <= fadeLength + _crossfadePrepareLead &&
         _fadePreparingFor != current.id) {
-      unawaited(_prepareCrossfade(current, duration));
+      unawaited(_prepareCrossfade(current, duration - fadeLength));
     }
   }
 
-  /// Loads [track] into [_fadePlayer], parked where the overlap will begin.
-  Future<void> _prepareCrossfade(JellyfinTrack track, Duration duration) async {
+  /// Creates the second player, with its state changes and errors recorded.
+  AudioPlayer _createFadePlayer() {
+    final fade = AudioPlayer(
+      handleInterruptions: false,
+      handleAudioSessionActivation: false,
+    );
+    fade.playerStateStream.listen((state) {
+      final described =
+          '${state.processingState.name}/${state.playing ? 'playing' : 'paused'}';
+      if (described != _lastLoggedFadeState) {
+        _lastLoggedFadeState = described;
+        _diag('FADE -> $described [${_snapshot(fade)}]');
+      }
+    });
+    fade.playbackEventStream.listen(
+      (_) {},
+      onError: (Object e, StackTrace st) {
+        PlaybackDiagnostics.failed('second player error: $e');
+      },
+    );
+    return fade;
+  }
+
+  /// Loads [track] into [_fadePlayer], parked at [startAt], where the
+  /// overlap will begin.
+  Future<void> _prepareCrossfade(JellyfinTrack track, Duration startAt) async {
     _fadePreparingFor = track.id;
     _fadeReadyFor = null;
+    final clock = Stopwatch()..start();
     try {
-      final fade = _fadePlayer ??= AudioPlayer(
-        handleInterruptions: false,
-        handleAudioSessionActivation: false,
-      );
+      final source = _buildAudioSource(track);
+      _diag('XFADE loading "${track.name}" into second player at '
+          '${PlaybackDiagnostics.time(startAt)} '
+          '(${source is UriAudioSource && source.uri.scheme == 'file' ? 'downloaded file' : 'stream'}) '
+          'main[${_snapshot(_player)}]');
+
+      final fade = _fadePlayer ??= _createFadePlayer();
+      await fade.pause();
       await fade.setVolume(0);
-      await fade.setAudioSource(
-        _buildAudioSource(track),
-        initialPosition: duration - crossfadeDuration,
-      );
-      if (_fadePreparingFor == track.id) _fadeReadyFor = track.id;
-    } catch (_) {
+      await fade.setAudioSource(source, initialPosition: startAt);
+
+      if (_fadePreparingFor != track.id) {
+        _diag('XFADE load finished after ${clock.elapsedMilliseconds} ms '
+            'but is no longer wanted');
+        return;
+      }
+      _fadeStartPosition = startAt;
+      _fadeReadyFor = track.id;
+      _diag('XFADE second player ready after ${clock.elapsedMilliseconds} ms '
+          'fade[${_snapshot(fade)}] main[${_snapshot(_player)}]');
+
+      // Both players must agree on how long the song is, or the tail the
+      // second one plays is not the real ending.
+      final mainDuration = _player.duration;
+      final fadeDuration = fade.duration;
+      if (mainDuration != null &&
+          fadeDuration != null &&
+          (mainDuration - fadeDuration).abs() > const Duration(seconds: 1)) {
+        PlaybackDiagnostics.failed('the two players disagree on the length of '
+            '"${track.name}": main ${PlaybackDiagnostics.time(mainDuration)}, '
+            'second ${PlaybackDiagnostics.time(fadeDuration)}');
+      }
+      unawaited(_checkMainSurvivedFadeLoad(track.name));
+    } catch (e) {
       // No crossfade for this track; it ends normally.
+      PlaybackDiagnostics.failed('second player could not load '
+          '"${track.name}" after ${clock.elapsedMilliseconds} ms: $e');
     }
   }
 
-  /// Hands the outgoing track's tail to [_fadePlayer] (fading out) while
-  /// [_player] moves to the next track (fading in).
-  Future<void> _runCrossfade(Duration position) async {
+  /// Starts [player] and reports whether it is really running: its position
+  /// only advances once audio is being produced.
+  Future<bool> _startAndConfirm(AudioPlayer player) async {
+    final from = player.position;
+    unawaited(player.play());
+    try {
+      await player
+          .createPositionStream(
+            minPeriod: const Duration(milliseconds: 10),
+            maxPeriod: const Duration(milliseconds: 20),
+          )
+          .firstWhere((p) => p - from >= const Duration(milliseconds: 20))
+          .timeout(const Duration(milliseconds: 600));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Plays the last [fadeLength] of the outgoing track [trackId] on
+  /// [_fadePlayer], fading out, while [_player] moves to the next track,
+  /// fading in.
+  Future<void> _runCrossfade(String trackId, Duration fadeLength) async {
     final fade = _fadePlayer;
-    if (fade == null) return;
+    if (fade == null || _crossfading) return;
+
+    // Everything must still be as it was when the fade was scheduled.
+    String? blocked;
+    if (!_crossfadeEnabled) {
+      blocked = 'crossfade was turned off';
+    } else if (_fadeReadyFor != trackId) {
+      blocked = 'second player is no longer prepared for this track';
+    } else if (_currentIndex >= _queue.length ||
+        _queue[_currentIndex].id != trackId) {
+      blocked = 'the track changed';
+    } else if (!_player.playing) {
+      blocked = 'playback is paused';
+    } else if (fade.processingState != ProcessingState.ready) {
+      blocked = 'second player is ${fade.processingState.name}, not ready';
+    }
+    if (blocked != null) {
+      _diag('XFADE not started: $blocked '
+          'main[${_snapshot(_player)}] fade[${_snapshot(fade)}]');
+      return;
+    }
+
+    // The timer assumed uninterrupted playback. If the song stalled it is
+    // not there yet: let the next tick schedule again.
+    final ahead = _player.position - _fadeStartPosition;
+    if (ahead < -_crossfadeSyncTolerance) {
+      _diag('XFADE postponed: main is ${-ahead.inMilliseconds} ms short of '
+          'the fade point (it stalled) main[${_snapshot(_player)}]');
+      return;
+    }
+
     _crossfading = true;
     final token = ++_fadeToken;
+    _fadeReadyFor = null;
+    var handedOver = false;
+    final total = Stopwatch()..start();
+    final outgoing = _queue[_currentIndex].name;
+    _diag('XFADE START "$outgoing" (${fadeLength.inSeconds}s), main is '
+        '${ahead.inMilliseconds} ms past the fade point '
+        'main[${_snapshot(_player)}] fade[${_snapshot(fade)}]');
     try {
-      await fade.seek(position);
-      if (token != _fadeToken) return;
-      await fade.setVolume(1.0);
-      unawaited(fade.play());
-      await _player.setVolume(0);
-      await _player.seekToNext();
-
-      const steps = 20;
-      final stepDelay = crossfadeDuration ~/ steps;
-      for (var i = 1; i <= steps; i++) {
-        await Future.delayed(stepDelay);
+      if (ahead > _crossfadeSyncTolerance) {
+        _diag('XFADE moving second player to match main');
+        await fade.seek(_player.position);
         if (token != _fadeToken) return;
-        final t = i / steps;
-        await _player.setVolume(t);
-        await fade.setVolume(1.0 - t);
       }
-    } catch (_) {
+
+      await fade.setVolume(1.0);
+      final started = await _startAndConfirm(fade);
+      _diag('XFADE second player ${started ? 'is playing' : 'DID NOT START'} '
+          'after ${total.elapsedMilliseconds} ms fade[${_snapshot(fade)}]');
+      if (!started) {
+        PlaybackDiagnostics.failed('second player did not start; '
+            '"$outgoing" will play to its end without a fade');
+        return; // Song ends normally.
+      }
+      if (token != _fadeToken) return;
+
+      // The old song now continues on the fade player; the main player can
+      // go quiet and move on.
+      await _player.setVolume(0);
+      handedOver = true;
+      final clock = Stopwatch()..start();
+      await _player.seekToNext();
+      _diag('XFADE handed over after ${total.elapsedMilliseconds} ms; main '
+          'moved to next track main[${_snapshot(_player)}] '
+          'fade[${_snapshot(fade)}]');
+
+      // Driven by the clock, so slow volume calls cannot stretch the fade.
+      var loggedQuarter = 0;
+      while (true) {
+        await Future.delayed(const Duration(milliseconds: 40));
+        if (token != _fadeToken) return;
+        final volumes = crossfadeVolumes(clock.elapsed, fadeLength);
+        await _player.setVolume(volumes.incoming);
+        await fade.setVolume(volumes.outgoing);
+
+        final quarter = (volumes.incoming * 4).floor();
+        if (quarter > loggedQuarter) {
+          loggedQuarter = quarter;
+          _diag('XFADE ${quarter * 25}% at ${clock.elapsedMilliseconds} ms: '
+              'new song vol=${volumes.incoming.toStringAsFixed(2)} '
+              '(${_player.processingState.name}, '
+              '${PlaybackDiagnostics.time(_player.position)}), '
+              'old song vol=${volumes.outgoing.toStringAsFixed(2)} '
+              '(${fade.processingState.name}, '
+              '${PlaybackDiagnostics.time(fade.position)}'
+              '/${PlaybackDiagnostics.time(fade.duration)})');
+          // The old song should still be sounding until the fade is over.
+          if (quarter < 3 &&
+              (!fade.playing ||
+                  fade.processingState != ProcessingState.ready)) {
+            PlaybackDiagnostics.failed('the outgoing song stopped sounding '
+                'part-way through the fade fade[${_snapshot(fade)}]');
+          }
+        }
+        if (volumes.incoming >= 1.0) break;
+      }
+    } catch (e) {
+      PlaybackDiagnostics.failed('crossfade aborted by an error: $e');
       // Fall through to restoring normal playback below.
     } finally {
       if (token == _fadeToken) {
         _crossfading = false;
         try {
-          await _player.setVolume(1.0);
+          if (handedOver) await _player.setVolume(1.0);
           await fade.pause();
+          await fade.setVolume(0);
         } catch (_) {
           // Ignore error
         }
+        _diag('XFADE END after ${total.elapsedMilliseconds} ms '
+            '(${handedOver ? 'completed' : 'not performed'}) '
+            'main[${_snapshot(_player)}]');
+      } else {
+        _diag('XFADE interrupted after ${total.elapsedMilliseconds} ms '
+            '(skip, seek, pause or new queue)');
       }
     }
   }
 
   /// Abandons any crossfade in progress and restores full volume.
   Future<void> _cancelCrossfade() async {
+    _lastTransportAction = DateTime.now();
+    final pending = _crossfading
+        ? 'a fade in progress'
+        : _fadeTimer != null
+            ? 'a scheduled fade'
+            : (_fadeReadyFor != null || _fadePreparingFor != null)
+                ? 'a prepared second player'
+                : null;
+    if (pending != null) _diag('XFADE cancelled $pending');
+
     _fadeToken++;
+    _fadeTimer?.cancel();
+    _fadeTimer = null;
     _fadePreparingFor = null;
     _fadeReadyFor = null;
     final wasCrossfading = _crossfading;
@@ -787,7 +1290,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       return AudioSource.file(cachedPath, tag: _trackToMediaItem(track));
     }
 
-    final streamUrl = _playlistService.jellyfinService.getStreamUrl(track.jellyfinId);
+    final streamUrl = _playlistService.musicService.getStreamUrl(track.jellyfinId);
     final streamUri = Uri.parse(streamUrl);
     return AudioSource.uri(
       streamUri,
@@ -796,7 +1299,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   }
 
   MediaItem _trackToMediaItem(JellyfinTrack track) {
-    final svc = _playlistService.jellyfinService;
+    final svc = _playlistService.musicService;
     final streamUrl = track.streamUrl ?? svc.getStreamUrl(track.jellyfinId);
 
     // Build the most reliable art URL:
@@ -837,7 +1340,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   /// [mediaItem] with a `file://` URI so Android Auto and the system notification
   /// shade can load it without needing HTTP auth headers in the request.
   Future<void> _pushArtFromFile(JellyfinTrack track) async {
-    final svc = _playlistService.jellyfinService;
+    final svc = _playlistService.musicService;
     Uri? remoteUri;
     if (track.id.startsWith('podcast_')) {
       remoteUri = track.imageTag != null ? Uri.parse(track.imageTag!) : null;
@@ -897,7 +1400,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
   }
 
   void _republishMediaItemWithFileArt(JellyfinTrack track, String filePath) {
-    final svc = _playlistService.jellyfinService;
+    final svc = _playlistService.musicService;
     final streamUrl = track.streamUrl ?? svc.getStreamUrl(track.jellyfinId);
     final contentUriStr = _toContentUri(filePath);
     mediaItem.add(MediaItem(
@@ -927,13 +1430,21 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
         MediaControl.skipToPrevious,
         if (playerState.playing) MediaControl.pause else MediaControl.play,
         MediaControl.skipToNext,
-        MediaControl.stop,
+        ..._extraControls,
+        // Last, so it is the one left out where space runs short.
+        const MediaControl(
+          androidIcon: 'drawable/ic_stop',
+          label: 'Stop',
+          action: MediaAction.stop,
+        ),
       ],
       systemActions: const {
         MediaAction.seek,
         MediaAction.seekForward,
         MediaAction.seekBackward,
         MediaAction.skipToQueueItem,
+        MediaAction.setShuffleMode,
+        MediaAction.setRepeatMode,
       },
       androidCompactActionIndices: const [0, 1, 2],
       processingState: processingState,
@@ -946,11 +1457,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       shuffleMode: _shuffleEnabled
           ? AudioServiceShuffleMode.all
           : AudioServiceShuffleMode.none,
-      repeatMode: switch (_player.loopMode) {
-        LoopMode.off => AudioServiceRepeatMode.none,
-        LoopMode.one => AudioServiceRepeatMode.one,
-        LoopMode.all => AudioServiceRepeatMode.all,
-      },
+      repeatMode: _repeatMode,
     ));
   }
 
@@ -979,12 +1486,14 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     try {
       final config = await _playlistService.db.getServerConfig();
       if (config != null && config.serverUrl.isNotEmpty && config.accessToken.isNotEmpty) {
-        _playlistService.jellyfinService = JellyfinService(
+        final service = MusicService.create(
+          type: ServerType.fromId(config.serverType),
           serverUrl: config.serverUrl,
           accessToken: config.accessToken,
           userId: config.userId,
         );
-        _autoHandler.updateCredentials(config.serverUrl, config.accessToken);
+        _playlistService.musicService = service;
+        _autoHandler.updateService(service);
         await _loadLibraryFromDb();
         await _restorePlaybackState();
       }
@@ -995,8 +1504,8 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
 
   Future<void> _loadLibraryFromDb() async {
     try {
-      final svc = _playlistService.jellyfinService;
-      if (svc.serverUrl == 'http://localhost' || svc.accessToken.isEmpty) return;
+      final svc = _playlistService.musicService;
+      if (!svc.isSignedIn) return;
 
       // Load local playlists
       final localPlaylists = await _playlistService.db.getAllLocalPlaylists();
@@ -1169,7 +1678,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     } else if (_inFlightAllTracksFetch != null) {
       libraryTracks = await _inFlightAllTracksFetch!;
     } else {
-      _inFlightAllTracksFetch = _playlistService.jellyfinService.getTracks();
+      _inFlightAllTracksFetch = _playlistService.musicService.getTracks();
       try {
         libraryTracks = await _inFlightAllTracksFetch!;
         _allTracksCache = libraryTracks;
@@ -1236,7 +1745,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     if (mediaId.startsWith('artist_play_all_')) {
       final artistId = mediaId.substring('artist_play_all_'.length);
       try {
-        final artistTracks = await _playlistService.jellyfinService.getArtistTracks(artistId);
+        final artistTracks = await _playlistService.musicService.getArtistTracks(artistId);
         if (artistTracks.isNotEmpty) {
           unawaited(_recordSelection(artistId, 'artist'));
           final artistName = artistTracks.first.artists.firstOrNull ?? 'Artist';
@@ -1305,6 +1814,10 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
             unawaited(_recordSelection(fromId, 'album'));
             fromType = 'album';
             fromTitle = tracks[index].albumName;
+          } else if (containerId == kLikedSongsContainer) {
+            fromId = FavoritesStore.likedSongsId;
+            fromType = 'liked';
+            fromTitle = FavoritesStore.likedSongsTitle;
           } else if (containerId.startsWith(kPrefixPlaylist)) {
             fromId = containerId.substring(kPrefixPlaylist.length);
             unawaited(_recordSelection(fromId, 'playlist'));
@@ -1337,7 +1850,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     // 3. Fallback: play single track
     try {
       var track = _autoHandler.findTrackById(mediaId);
-      track ??= await _playlistService.jellyfinService.getTrack(mediaId);
+      track ??= await _playlistService.musicService.getTrack(mediaId);
 
       if (track != null) {
         if (track.albumId.isNotEmpty) {
@@ -1425,18 +1938,6 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
       final parts = filePath.split('/cache/');
       final relativePath = parts.sublist(1).join('/cache/');
       return 'content://com.riffhouse.mobile_music_player.publicfileprovider/cache/$relativePath';
-    }
-    
-    if (filePath.contains('/app_flutter/')) {
-      final parts = filePath.split('/app_flutter/');
-      final relativePath = parts.sublist(1).join('/app_flutter/');
-      return 'content://com.riffhouse.mobile_music_player.publicfileprovider/files/$relativePath';
-    }
-
-    if (filePath.contains('/files/')) {
-      final parts = filePath.split('/files/');
-      final relativePath = parts.sublist(1).join('/files/');
-      return 'content://com.riffhouse.mobile_music_player.publicfileprovider/files/$relativePath';
     }
     
     return filePath;
@@ -1652,7 +2153,7 @@ class JellyfinAudioHandler extends BaseAudioHandler with QueueHandler {
     } catch (_) {}
 
     try {
-      final remoteTracks = await _playlistService.jellyfinService.getTracks();
+      final remoteTracks = await _playlistService.musicService.getTracks();
       if (remoteTracks.isNotEmpty) {
         _allTracksCache = remoteTracks;
         return remoteTracks;

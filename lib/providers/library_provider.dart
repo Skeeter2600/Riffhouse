@@ -15,6 +15,12 @@ import 'auth_provider.dart';
 import 'database_provider.dart';
 import 'podcast_provider.dart';
 import '../audio/queue_notifier.dart';
+import '../utils/log.dart';
+
+part 'library/smart_mix_providers.dart';
+part 'library/recently_played_providers.dart';
+part 'library/home_providers.dart';
+part 'library/android_auto_sync_provider.dart';
 
 // ---------------------------------------------------------------------------
 // Helpers for mapping between database models and network models
@@ -64,141 +70,162 @@ LocalTracksCompanion jellyfinTrackToCompanion(JellyfinTrack track) {
 // Tracks
 // ---------------------------------------------------------------------------
 
+///
+/// How the track list stays up to date:
+///  * It is shown straight from the local database.
+///  * Every launch does a cheap incremental sync that asks the server only
+///    for tracks added since last time.
+///  * A full sync, which downloads the whole library and is the only way to
+///    notice tracks that were removed or retagged on the server, runs at most
+///    once per [fullSyncInterval] and on pull-to-refresh.
 class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
+  static const _fullSyncPrefKey = 'library_full_sync_at';
+
+  /// How often the whole library is downloaded again in the background.
+  static const fullSyncInterval = Duration(hours: 24);
+
+  /// Whether a full sync should run, given when the last one finished.
+  static bool isFullSyncDue(DateTime? lastFullSync, DateTime now) =>
+      lastFullSync == null || now.difference(lastFullSync) >= fullSyncInterval;
+
+  Future<void> _recordFullSync() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+          _fullSyncPrefKey, DateTime.now().millisecondsSinceEpoch);
+    } catch (_) {
+      // Ignore error
+    }
+  }
+
+  /// Runs a full sync in the background if the last one is old enough,
+  /// without replacing the list on screen by a spinner.
+  Future<void> _fullSyncIfDue() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final last = prefs.getInt(_fullSyncPrefKey);
+      final lastFullSync =
+          last == null ? null : DateTime.fromMillisecondsSinceEpoch(last);
+      if (!isFullSyncDue(lastFullSync, DateTime.now())) {
+        logDebug('[TracksNotifier] Full sync not due (last: $lastFullSync)');
+        return;
+      }
+      logDebug('[TracksNotifier] Full sync due (last: $lastFullSync)');
+      await refresh(silent: true);
+    } catch (e) {
+      logDebug('[TracksNotifier._fullSyncIfDue] $e');
+    }
+  }
+
   @override
   Future<List<JellyfinTrack>> build() async {
     final db = ref.watch(databaseProvider);
-    final service = ref.watch(jellyfinServiceProvider);
-    debugPrint('[TracksNotifier.build] service=${service != null ? "READY (userId=${service.userId})" : "NULL"}');
+    final service = ref.watch(musicServiceProvider);
+    logDebug('[TracksNotifier.build] service=${service != null ? "READY (userId=${service.userId})" : "NULL"}');
     if (service == null) {
-      debugPrint('[TracksNotifier.build] service is null → returning []');
+      logDebug('[TracksNotifier.build] service is null → returning []');
       return [];
     }
 
     // Eagerly load from database
     final localTracks = await db.getAllLocalTracks();
     final cachedTracks = localTracks.map(localTrackToJellyfin).toList();
-    debugPrint('[TracksNotifier.build] DB cache has ${cachedTracks.length} tracks');
+    logDebug('[TracksNotifier.build] DB cache has ${cachedTracks.length} tracks');
 
     if (cachedTracks.isEmpty) {
       // Database is empty — first sync.
-      debugPrint('[TracksNotifier.build] DB empty → starting _syncInitial');
+      logDebug('[TracksNotifier.build] DB empty → starting _syncInitial');
       return _syncInitial(db, service);
     } else {
       // Schedule background sync
-      debugPrint('[TracksNotifier.build] Returning ${cachedTracks.length} cached tracks, scheduling background sync');
+      logDebug('[TracksNotifier.build] Returning ${cachedTracks.length} cached tracks, scheduling background sync');
       _syncBackground(db, service);
+      _fullSyncIfDue();
       return cachedTracks;
     }
   }
 
-  Future<List<JellyfinTrack>> _syncInitial(AppDatabase db, JellyfinService service) async {
+  Future<List<JellyfinTrack>> _syncInitial(AppDatabase db, MusicService service) async {
     try {
-      debugPrint('[TracksNotifier._syncInitial] Fetching all tracks from server...');
+      logDebug('[TracksNotifier._syncInitial] Fetching all tracks from server...');
       final remoteTracks = await service.getTracks();
-      debugPrint('[TracksNotifier._syncInitial] Got ${remoteTracks.length} tracks from server');
+      logDebug('[TracksNotifier._syncInitial] Got ${remoteTracks.length} tracks from server');
       final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
       await db.bulkInsertLocalTracks(companions);
-      debugPrint('[TracksNotifier._syncInitial] Saved ${remoteTracks.length} tracks to DB');
+      logDebug('[TracksNotifier._syncInitial] Saved ${remoteTracks.length} tracks to DB');
+      if (remoteTracks.isNotEmpty) await _recordFullSync();
       return remoteTracks;
     } catch (e, st) {
-      debugPrint('[TracksNotifier._syncInitial] ERROR: $e\n$st');
+      logDebug('[TracksNotifier._syncInitial] ERROR: $e\n$st');
       return [];
     }
   }
 
-  Future<void> _syncBackground(AppDatabase db, JellyfinService service) async {
+  Future<void> _syncBackground(AppDatabase db, MusicService service) async {
     try {
-      const batchSize = 200;
-      int startIndex = 0;
-      final newTracks = <JellyfinTrack>[];
-      bool foundExisting = false;
-      debugPrint('[TracksNotifier._syncBackground] Starting background sync...');
+      logDebug('[TracksNotifier._syncBackground] Starting background sync...');
+      final newTracks = await service
+          .fetchNewTracks((id) async => await db.getLocalTrack(id) != null);
 
-      while (!foundExisting) {
-        final page = await service.getTracksPaged(
-          startIndex: startIndex,
-          limit: batchSize,
-          sortBy: 'DateCreated',
-          sortOrder: 'Descending',
-        );
-
-        if (page.isEmpty) break;
-
-        for (final track in page) {
-          final exists = await db.getLocalTrack(track.id) != null;
-          if (exists) {
-            foundExisting = true;
-            break;
-          }
-          newTracks.add(track);
-        }
-
-        if (page.length < batchSize) break;
-        startIndex += page.length;
-      }
-
-      debugPrint('[TracksNotifier._syncBackground] Found ${newTracks.length} new tracks');
+      logDebug('[TracksNotifier._syncBackground] Found ${newTracks.length} new tracks');
       if (newTracks.isNotEmpty) {
         final companions = newTracks.map(jellyfinTrackToCompanion).toList();
         await db.bulkInsertLocalTracks(companions);
 
         // Reload all tracks and update state
         final updatedLocal = await db.getAllLocalTracks();
-        debugPrint('[TracksNotifier._syncBackground] Updated state with ${updatedLocal.length} total tracks');
+        logDebug('[TracksNotifier._syncBackground] Updated state with ${updatedLocal.length} total tracks');
         state = AsyncData(updatedLocal.map(localTrackToJellyfin).toList());
       }
     } catch (e, st) {
-      debugPrint('[TracksNotifier._syncBackground] ERROR: $e\n$st');
+      logDebug('[TracksNotifier._syncBackground] ERROR: $e\n$st');
     }
   }
 
-  Future<void> refresh() async {
-    final service = ref.read(jellyfinServiceProvider);
+  /// Downloads the whole library and reconciles the local copy with it.
+  /// With [silent] the current list stays on screen while that happens.
+  Future<void> refresh({bool silent = false}) async {
+    final service = ref.read(musicServiceProvider);
     final db = ref.read(databaseProvider);
-    debugPrint('[TracksNotifier.refresh] Called. service=${service != null ? "READY" : "NULL"}');
+    logDebug('[TracksNotifier.refresh] Called. service=${service != null ? "READY" : "NULL"}');
 
     // If the service is not available yet, do NOT wipe the state. Just load
     // from the local database so existing cached songs remain visible.
     if (service == null) {
       final localTracks = await db.getAllLocalTracks();
-      debugPrint('[TracksNotifier.refresh] service null → DB has ${localTracks.length} tracks, keeping state');
+      logDebug('[TracksNotifier.refresh] service null → DB has ${localTracks.length} tracks, keeping state');
       if (localTracks.isNotEmpty) {
         state = AsyncData(localTracks.map(localTrackToJellyfin).toList());
       }
       return;
     }
 
-    debugPrint('[TracksNotifier.refresh] Fetching from server (serverUrl=${service.serverUrl}, userId=${service.userId})...');
-    state = const AsyncLoading();
+    logDebug('[TracksNotifier.refresh] Fetching from server (serverUrl=${service.serverUrl}, userId=${service.userId})...');
+    if (!silent) state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final remoteTracks = await service.getTracks();
-      debugPrint('[TracksNotifier.refresh] Got ${remoteTracks.length} tracks from server');
-
-      // If the server returned nothing and the DB is also empty, this is most
-      // likely a 401 / auth failure. getTracks() silently returns [] on DioException,
-      // so we verify the session and logout if the token is bad.
-      if (remoteTracks.isEmpty) {
-        final localTracks = await db.getAllLocalTracks();
-        if (localTracks.isNotEmpty) {
-          debugPrint('[TracksNotifier.refresh] Server returned 0 tracks but DB has ${localTracks.length} — checking session validity');
-        }
-        final sessionValid = await service.verifySession();
-        if (!sessionValid) {
-          debugPrint('[TracksNotifier.refresh] Session invalid (401) — triggering logout401');
+      // The result is used below to drop local tracks that are gone from the
+      // server, so it has to be the complete library. If the fetch fails
+      // (offline, server down, expired sign-in) keep what is stored locally.
+      final List<JellyfinTrack> remoteTracks;
+      try {
+        remoteTracks = await service.getTracks(throwOnError: true);
+      } catch (e) {
+        logDebug('[TracksNotifier.refresh] Fetch failed, keeping local library: $e');
+        if (await service.checkSession() == SessionStatus.unauthorized) {
           ref.read(authProvider.notifier).logout401();
-          // Return existing DB cache so UI doesn't flash empty before redirect
-          final cached = await db.getAllLocalTracks();
-          return cached.map(localTrackToJellyfin).toList();
         }
+        final cached = await db.getAllLocalTracks();
+        return cached.map(localTrackToJellyfin).toList();
       }
+      logDebug('[TracksNotifier.refresh] Got ${remoteTracks.length} tracks from server');
+      await _recordFullSync();
 
       // Perform database reconciliation. A local write failure must not turn a
       // successful server fetch into an error state.
       try {
         final remoteIds = remoteTracks.map((t) => t.id).toSet();
         final localTracks = await db.getAllLocalTracks();
-        debugPrint('[TracksNotifier.refresh] DB has ${localTracks.length} local tracks before reconciliation');
+        logDebug('[TracksNotifier.refresh] DB has ${localTracks.length} local tracks before reconciliation');
 
         // Delete any tracks that are no longer on the server
         for (final local in localTracks) {
@@ -210,9 +237,9 @@ class TracksNotifier extends AsyncNotifier<List<JellyfinTrack>> {
         // Upsert all fetched tracks
         final companions = remoteTracks.map(jellyfinTrackToCompanion).toList();
         await db.bulkInsertLocalTracks(companions);
-        debugPrint('[TracksNotifier.refresh] Upserted ${companions.length} tracks to DB');
+        logDebug('[TracksNotifier.refresh] Upserted ${companions.length} tracks to DB');
       } catch (e, st) {
-        debugPrint('[TracksNotifier.refresh] DB reconciliation ERROR: $e\n$st');
+        logDebug('[TracksNotifier.refresh] DB reconciliation ERROR: $e\n$st');
       }
 
       return remoteTracks;
@@ -231,13 +258,13 @@ final tracksProvider =
 class AlbumsNotifier extends AsyncNotifier<List<JellyfinAlbum>> {
   @override
   Future<List<JellyfinAlbum>> build() async {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     if (service == null) return [];
     return service.getAlbums();
   }
 
   Future<void> refresh() async {
-    final service = ref.read(jellyfinServiceProvider);
+    final service = ref.read(musicServiceProvider);
     // Do not wipe state if service is not yet available.
     if (service == null) return;
     state = const AsyncLoading();
@@ -256,13 +283,13 @@ final albumsProvider =
 class ArtistsNotifier extends AsyncNotifier<List<JellyfinArtist>> {
   @override
   Future<List<JellyfinArtist>> build() async {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     if (service == null) return [];
     return service.getArtists();
   }
 
   Future<void> refresh() async {
-    final service = ref.read(jellyfinServiceProvider);
+    final service = ref.read(musicServiceProvider);
     // Do not wipe state if service is not yet available.
     if (service == null) return;
     state = const AsyncLoading();
@@ -281,7 +308,7 @@ final artistsProvider =
 class PlaylistsNotifier extends AsyncNotifier<List<JellyfinPlaylist>> {
   @override
   Future<List<JellyfinPlaylist>> build() async {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final db = ref.watch(databaseProvider);
 
     if (service == null) {
@@ -339,7 +366,7 @@ class PlaylistsNotifier extends AsyncNotifier<List<JellyfinPlaylist>> {
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final service = ref.read(jellyfinServiceProvider);
+      final service = ref.read(musicServiceProvider);
       final db = ref.read(databaseProvider);
       if (service == null) {
         final local = await db.getAllLocalPlaylists();
@@ -383,10 +410,16 @@ final playlistsProvider =
 
 final albumTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>(
     (ref, albumId) async {
-  final service = ref.watch(jellyfinServiceProvider);
+  final service = ref.watch(musicServiceProvider);
   if (service == null) return const [];
   final tracks = await service.getAlbumTracks(albumId);
-  return List<JellyfinTrack>.unmodifiable(tracks);
+  if (tracks.isNotEmpty) return List<JellyfinTrack>.unmodifiable(tracks);
+
+  // Offline and never opened before: build the album from the local library.
+  final local = await ref.read(databaseProvider).getAllLocalTracks();
+  return List<JellyfinTrack>.unmodifiable(
+    local.where((t) => t.albumId == albumId).map(localTrackToJellyfin),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -395,14 +428,14 @@ final albumTracksProvider = FutureProvider.family<List<JellyfinTrack>, String>(
 
 final artistAlbumsProvider =
     FutureProvider.family<List<JellyfinAlbum>, String>((ref, artistId) async {
-  final service = ref.watch(jellyfinServiceProvider);
+  final service = ref.watch(musicServiceProvider);
   if (service == null) return const [];
   return service.getArtistAlbums(artistId);
 });
 
 final artistTracksProvider =
     FutureProvider.family<List<JellyfinTrack>, String>((ref, artistId) async {
-  final service = ref.watch(jellyfinServiceProvider);
+  final service = ref.watch(musicServiceProvider);
   if (service == null) return const [];
   final tracks = await service.getArtistTracks(artistId);
   return List<JellyfinTrack>.unmodifiable(tracks);
@@ -415,7 +448,7 @@ final artistTracksProvider =
 final playlistTracksProvider =
     FutureProvider.family<List<JellyfinTrack>, String>(
         (ref, playlistId) async {
-  final service = ref.watch(jellyfinServiceProvider);
+  final service = ref.watch(musicServiceProvider);
   if (service == null) return const [];
   final tracks = await service.getPlaylistTracks(playlistId);
   return List<JellyfinTrack>.unmodifiable(tracks);
@@ -433,7 +466,8 @@ class CachedTracksNotifier extends AsyncNotifier<List<CachedTrack>> {
   }
 
   Future<void> refresh() async {
-    state = const AsyncLoading();
+    // Keeps showing the current list while reloading; this runs after every
+    // finished download and must not flash a spinner each time.
     state = await AsyncValue.guard(() async {
       final cacheService = ref.read(cacheServiceProvider);
       return cacheService.getAllCachedTracks();
@@ -459,718 +493,3 @@ class CachedTracksNotifier extends AsyncNotifier<List<CachedTrack>> {
 final cachedTracksProvider =
     AsyncNotifierProvider<CachedTracksNotifier, List<CachedTrack>>(
         CachedTracksNotifier.new);
-
-// ---------------------------------------------------------------------------
-// Smart mix caching (regenerates daily at midnight local time)
-// ---------------------------------------------------------------------------
-
-class _CachedMix {
-  final List<JellyfinTrack> tracks;
-  final DateTime generatedAt;
-  _CachedMix(this.tracks, this.generatedAt);
-}
-
-DateTime _nextMidnight(DateTime from) {
-  return DateTime(from.year, from.month, from.day + 1);
-}
-
-bool _isMixCacheValid(DateTime generatedAt) {
-  return DateTime.now().isBefore(_nextMidnight(generatedAt));
-}
-
-final Map<String, _CachedMix> _mixMemoryCache = {};
-
-/// Generations currently running, so concurrent provider builds share one
-/// result instead of each producing a different random mix.
-final Map<String, Future<List<JellyfinTrack>>> _mixInFlight = {};
-
-/// Bumped on every cache clear so a generation started before the clear does
-/// not persist its now-outdated result.
-int _mixCacheEpoch = 0;
-
-const _smartMixStoragePrefix = 'smart_mix_persisted_cache_v2_';
-
-Future<List<JellyfinTrack>?> _getPersistedMix(String mixType) async {
-  // Check in-memory cache first
-  final mem = _mixMemoryCache[mixType];
-  if (mem != null && _isMixCacheValid(mem.generatedAt)) {
-    return mem.tracks;
-  }
-
-  // Check persistent storage across app restarts
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final jsonStr = prefs.getString('$_smartMixStoragePrefix$mixType');
-    if (jsonStr != null && jsonStr.isNotEmpty) {
-      final Map<String, dynamic> data = jsonDecode(jsonStr);
-      final generatedAtMs = data['generatedAt'] as int?;
-      if (generatedAtMs != null) {
-        final generatedAt = DateTime.fromMillisecondsSinceEpoch(generatedAtMs);
-        if (_isMixCacheValid(generatedAt)) {
-          final rawTracks = data['tracks'] as List? ?? [];
-          final tracks = rawTracks
-              .map((t) => JellyfinTrack.fromJson(t as Map<String, dynamic>))
-              .toList();
-          _mixMemoryCache[mixType] = _CachedMix(tracks, generatedAt);
-          return tracks;
-        }
-      }
-    }
-  } catch (_) {
-    // Ignore cache read error
-  }
-  return null;
-}
-
-Future<void> _persistMix(String mixType, List<JellyfinTrack> tracks) async {
-  final now = DateTime.now();
-  _mixMemoryCache[mixType] = _CachedMix(tracks, now);
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final payload = {
-      'generatedAt': now.millisecondsSinceEpoch,
-      'tracks': tracks.map((t) => t.toMap()).toList(),
-    };
-    await prefs.setString('$_smartMixStoragePrefix$mixType', jsonEncode(payload));
-  } catch (_) {
-    // Ignore cache write error
-  }
-}
-
-/// Read access to the daily smart mix cache for code outside the provider
-/// graph (the Android Auto browse tree), so it shows the same mix as the app.
-Future<List<JellyfinTrack>?> getCachedSmartMix(String mixType) =>
-    _getPersistedMix(mixType);
-
-/// Stores [tracks] as today's mix for [mixType]. See [getCachedSmartMix].
-Future<void> cacheSmartMix(String mixType, List<JellyfinTrack> tracks) =>
-    _persistMix(mixType, tracks);
-
-Future<void> clearSmartMixCache([String? mixType]) async {
-  _mixCacheEpoch++;
-  if (mixType != null) {
-    _mixMemoryCache.remove(mixType);
-    _mixInFlight.remove(mixType);
-  } else {
-    _mixMemoryCache.clear();
-    _mixInFlight.clear();
-  }
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    if (mixType != null) {
-      await prefs.remove('$_smartMixStoragePrefix$mixType');
-    } else {
-      final keys = prefs.getKeys().where((k) => k.startsWith(_smartMixStoragePrefix)).toList();
-      for (final k in keys) {
-        await prefs.remove(k);
-      }
-    }
-  } catch (_) {
-    // Ignore cache clear error
-  }
-}
-
-class DailyMixConfigNotifier extends StateNotifier<AsyncValue<DailyMixConfig>> {
-  final PlaylistService _playlistService;
-
-  DailyMixConfigNotifier(this._playlistService) : super(const AsyncLoading()) {
-    loadConfig();
-  }
-
-  Future<void> loadConfig() async {
-    state = const AsyncLoading();
-    try {
-      final config = await _playlistService.getDailyMixConfig();
-      state = AsyncData(config);
-    } catch (e, st) {
-      state = AsyncError(e, st);
-    }
-  }
-
-  Future<void> saveConfig(DailyMixConfig config) async {
-    await _playlistService.saveDailyMixConfig(config);
-    // Clear before publishing the new config so nothing re-reads the old mix.
-    await clearSmartMixCache('daily_drive');
-    state = AsyncData(config);
-  }
-
-  Future<void> resetConfig() async {
-    await _playlistService.resetDailyMixConfig();
-    final defaultConfig = DailyMixConfig.defaultConfig();
-    await clearSmartMixCache('daily_drive');
-    state = AsyncData(defaultConfig);
-  }
-}
-
-final dailyMixConfigProvider =
-    StateNotifierProvider<DailyMixConfigNotifier, AsyncValue<DailyMixConfig>>((ref) {
-  final playlistService = ref.watch(playlistServiceProvider);
-  return DailyMixConfigNotifier(playlistService);
-});
-
-final topGenresProvider = FutureProvider<List<String>>((ref) async {
-  final playlistService = ref.watch(playlistServiceProvider);
-  return playlistService.getTopListenedGenres();
-});
-
-final recentGenresProvider = FutureProvider<List<String>>((ref) async {
-  final playlistService = ref.watch(playlistServiceProvider);
-  return playlistService.getRecentlyListenedGenres();
-});
-
-/// Provider that resolves the tracks for a given smart mix type
-/// ('daily', 'heavy', 'undiscovered', 'daily_drive').
-/// Results are persisted to disk and valid until midnight of each day.
-final smartMixTracksProvider =
-    FutureProvider.autoDispose.family<List<JellyfinTrack>, String>((ref, mixType) async {
-  // Resolve dependencies up front; the provider may be disposed while awaiting.
-  final tracksFuture = ref.watch(tracksProvider.future)..ignore();
-  final playlistService = ref.read(playlistServiceProvider);
-  final podcastService = ref.read(podcastServiceProvider);
-
-  // Return persisted/cached result if still valid (before midnight).
-  final cached = await _getPersistedMix(mixType);
-  if (cached != null && cached.isNotEmpty) {
-    return cached;
-  }
-
-  final running = _mixInFlight[mixType];
-  if (running != null) return running;
-
-  final generation = _generateSmartMix(
-    mixType: mixType,
-    tracksFuture: tracksFuture,
-    playlistService: playlistService,
-    podcastService: podcastService,
-  );
-  _mixInFlight[mixType] = generation;
-  try {
-    return await generation;
-  } finally {
-    if (identical(_mixInFlight[mixType], generation)) {
-      _mixInFlight.remove(mixType);
-    }
-  }
-});
-
-Future<List<JellyfinTrack>> _generateSmartMix({
-  required String mixType,
-  required Future<List<JellyfinTrack>> tracksFuture,
-  required PlaylistService playlistService,
-  required PodcastService podcastService,
-}) async {
-  final epoch = _mixCacheEpoch;
-  final tracks = await tracksFuture;
-  var complete = true;
-
-  List<JellyfinTrack> result;
-  if (mixType.startsWith('genre_')) {
-    final genre = Uri.decodeComponent(mixType.substring('genre_'.length));
-    result = await playlistService.getSmartMix(
-      genreFilter: [genre],
-      libraryTracks: tracks,
-    );
-  } else if (mixType == 'daily') {
-    result = await playlistService.getSmartMix(libraryTracks: tracks);
-  } else if (mixType == 'daily_drive') {
-    // The config is read from storage here rather than watched, so a config
-    // provider emission cannot trigger a second, different generation.
-    result = await playlistService.getDailyDrive(
-      libraryTracks: tracks,
-      podcastService: podcastService,
-      onIncomplete: () => complete = false,
-    );
-  } else if (mixType == 'heavy') {
-    result = await playlistService.getHeavyRotation(libraryTracks: tracks);
-  } else if (mixType == 'undiscovered') {
-    result = await playlistService.getUndiscovered(libraryTracks: tracks);
-  } else {
-    result = [];
-  }
-
-  // Persist result until next midnight, unless a source failed to load (retry
-  // on the next open) or the cache was cleared while generating.
-  if (complete && result.isNotEmpty && epoch == _mixCacheEpoch) {
-    await _persistMix(mixType, result);
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Recently played (local cache — fast, works offline)
-// ---------------------------------------------------------------------------
-
-/// Model for a single recently-played item shown in the home screen section.
-class RecentlyPlayedItem {
-  final String id;
-  final String title;
-  final String subtitle;
-  final String? imageTag;
-  final RecentlyPlayedType type;
-  final DateTime lastPlayedAt;
-  /// For [RecentlyPlayedType.mix] items — the mixType string used to navigate
-  /// to SmartMixDetailScreen (e.g. 'daily', 'genre_Rock').
-  final String? mixType;
-  final int? colorValue;
-  final int? secondaryColorValue;
-
-  const RecentlyPlayedItem({
-    required this.id,
-    required this.title,
-    required this.subtitle,
-    this.imageTag,
-    required this.type,
-    required this.lastPlayedAt,
-    this.mixType,
-    this.colorValue,
-    this.secondaryColorValue,
-  });
-}
-
-enum RecentlyPlayedType { track, album, artist, playlist, mix }
-
-/// Mix types that must not appear in the Recently Played section
-/// because they already have prominent dedicated cards on the home screen.
-const kExcludedRecentlyPlayedMixTypes = {
-  'daily',
-  'daily_drive',
-  'heavy',
-  'undiscovered',
-};
-
-/// Returns true if the mix should be excluded from Recently Played.
-bool isExcludedRecentlyPlayedMix({String? mixType, String? id, String? title}) {
-  if (mixType != null && kExcludedRecentlyPlayedMixTypes.contains(mixType.toLowerCase())) {
-    return true;
-  }
-  if (id != null && kExcludedRecentlyPlayedMixTypes.contains(id.toLowerCase())) {
-    return true;
-  }
-  if (title != null) {
-    final t = title.toLowerCase().trim();
-    if (t == 'daily mix' || t == 'daily drive' || t == 'heavy rotation' || t == 'undiscovered') {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// Helper to get fallback gradient colors for mix types
-List<Color> getMixPalette(String mixType) {
-  if (mixType.startsWith('genre_')) {
-    final genre = Uri.decodeComponent(mixType.replaceFirst('genre_', ''));
-    const palettes = [
-      [Color(0xFF3B82F6), Color(0xFF1D4ED8)],
-      [Color(0xFF10B981), Color(0xFF047857)],
-      [Color(0xFFF97316), Color(0xFFC2410C)],
-      [Color(0xFF8B5CF6), Color(0xFF6D28D9)],
-      [Color(0xFFEC4899), Color(0xFFBE185D)],
-      [Color(0xFF14B8A6), Color(0xFF0F766E)],
-      [Color(0xFFEAB308), Color(0xFFA16207)],
-      [Color(0xFF6366F1), Color(0xFF4338CA)],
-    ];
-    return palettes[genre.hashCode.abs() % palettes.length];
-  }
-  if (mixType == 'daily') return const [Color(0xFF7C3AED), Color(0xFF4F46E5)];
-  if (mixType == 'heavy') return const [Color(0xFFEC4899), Color(0xFFBE185D)];
-  if (mixType == 'undiscovered') return const [Color(0xFF06B6D4), Color(0xFF0369A1)];
-  if (mixType == 'daily_drive') return const [Color(0xFFF59E0B), Color(0xFFD97706)];
-  return const [Color(0xFF8B5CF6), Color(0xFF7C3AED)];
-}
-
-/// Model for a recorded selection in history
-class RecentSelection {
-  final String id;
-  final String type; // 'album', 'artist', 'playlist', 'mix'
-  final DateTime timestamp;
-  /// Stored title for 'mix' entries (no server lookup needed).
-  final String? title;
-  /// The mixType used to navigate to SmartMixDetailScreen for 'mix' entries.
-  final String? mixType;
-  final int? colorValue;
-  final int? secondaryColorValue;
-
-  RecentSelection({
-    required this.id,
-    required this.type,
-    required this.timestamp,
-    this.title,
-    this.mixType,
-    this.colorValue,
-    this.secondaryColorValue,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'type': type,
-        'timestamp': timestamp.millisecondsSinceEpoch,
-        if (title != null) 'title': title,
-        if (mixType != null) 'mixType': mixType,
-        if (colorValue != null) 'colorValue': colorValue,
-        if (secondaryColorValue != null) 'secondaryColorValue': secondaryColorValue,
-      };
-
-  factory RecentSelection.fromJson(Map<String, dynamic> json) => RecentSelection(
-        id: json['id'] as String,
-        type: json['type'] as String,
-        timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp'] as int),
-        title: json['title'] as String?,
-        mixType: json['mixType'] as String?,
-        colorValue: json['colorValue'] as int?,
-        secondaryColorValue: json['secondaryColorValue'] as int?,
-      );
-}
-
-class RecentSelectionsNotifier extends StateNotifier<List<RecentSelection>> {
-  RecentSelectionsNotifier() : super([]) {
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final jsonStr = prefs.getString('recent_selections');
-      if (jsonStr != null) {
-        final List<dynamic> list = jsonDecode(jsonStr);
-        final loaded = list
-            .map((item) => RecentSelection.fromJson(item))
-            .where((item) => !(item.type == 'mix' &&
-                isExcludedRecentlyPlayedMix(
-                  mixType: item.mixType,
-                  id: item.id,
-                  title: item.title,
-                )))
-            .toList();
-        state = loaded;
-      }
-    } catch (_) {}
-  }
-
-  Future<void> addSelection(
-    String id,
-    String type, {
-    String? title,
-    String? mixType,
-    int? colorValue,
-    int? secondaryColorValue,
-  }) async {
-    // Smart mixes of daily mix, daily drive, heavy rotation, and undiscovered
-    // should not appear in the recently played section.
-    if (type == 'mix' &&
-        isExcludedRecentlyPlayedMix(
-          mixType: mixType,
-          id: id,
-          title: title,
-        )) {
-      return;
-    }
-
-    // Remove if already exists (to move it to top)
-    final filtered = state.where((item) => !(item.id == id && item.type == type)).toList();
-
-    final newItem = RecentSelection(
-      id: id,
-      type: type,
-      timestamp: DateTime.now(),
-      title: title,
-      mixType: mixType,
-      colorValue: colorValue,
-      secondaryColorValue: secondaryColorValue,
-    );
-
-    final newState = [newItem, ...filtered].take(20).toList();
-    state = newState;
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final jsonStr = jsonEncode(newState.map((item) => item.toJson()).toList());
-      await prefs.setString('recent_selections', jsonStr);
-    } catch (_) {}
-  }
-}
-
-final recentSelectionsProvider = StateNotifierProvider<RecentSelectionsNotifier, List<RecentSelection>>((ref) {
-  return RecentSelectionsNotifier();
-});
-
-/// Resolves actual models for recently played items by watching [recentSelectionsProvider]
-/// and joining against active providers.
-final recentlyPlayedProvider = FutureProvider<List<RecentlyPlayedItem>>((ref) async {
-  final selections = ref.watch(recentSelectionsProvider);
-  if (selections.isEmpty) return [];
-
-  final albums = ref.watch(albumsProvider).valueOrNull ?? [];
-  final artists = ref.watch(artistsProvider).valueOrNull ?? [];
-  final playlists = ref.watch(playlistsProvider).valueOrNull ?? [];
-
-  final List<RecentlyPlayedItem> items = [];
-
-  for (final sel in selections) {
-    try {
-      if (sel.type == 'album') {
-        final album = albums.firstWhere((a) => a.id == sel.id);
-        items.add(RecentlyPlayedItem(
-          id: album.id,
-          title: album.name,
-          subtitle: album.artist,
-          imageTag: album.imageTag,
-          type: RecentlyPlayedType.album,
-          lastPlayedAt: sel.timestamp,
-        ));
-      } else if (sel.type == 'artist') {
-        final artist = artists.firstWhere((a) => a.id == sel.id);
-        items.add(RecentlyPlayedItem(
-          id: artist.id,
-          title: artist.name,
-          subtitle: 'Artist',
-          imageTag: artist.imageTag,
-          type: RecentlyPlayedType.artist,
-          lastPlayedAt: sel.timestamp,
-        ));
-      } else if (sel.type == 'playlist') {
-        final playlist = playlists.firstWhere((p) => p.id == sel.id);
-        items.add(RecentlyPlayedItem(
-          id: playlist.id,
-          title: playlist.name,
-          subtitle: '${playlist.trackCount} tracks',
-          imageTag: playlist.imageTag,
-          type: RecentlyPlayedType.playlist,
-          lastPlayedAt: sel.timestamp,
-        ));
-      } else if (sel.type == 'mix' && sel.mixType != null && sel.title != null) {
-        if (isExcludedRecentlyPlayedMix(
-          mixType: sel.mixType,
-          id: sel.id,
-          title: sel.title,
-        )) {
-          continue;
-        }
-        // Mix items store title & mixType directly — no server lookup needed.
-        final palette = sel.colorValue != null
-            ? null
-            : getMixPalette(sel.mixType!);
-        items.add(RecentlyPlayedItem(
-          id: sel.mixType!,
-          title: sel.title!,
-          subtitle: 'Mix',
-          imageTag: null,
-          type: RecentlyPlayedType.mix,
-          lastPlayedAt: sel.timestamp,
-          mixType: sel.mixType,
-          colorValue: sel.colorValue ?? palette?[0].toARGB32(),
-          secondaryColorValue: sel.secondaryColorValue ?? palette?[1].toARGB32(),
-        ));
-      }
-    } catch (_) {
-      // Item not found in current library — skip it.
-    }
-  }
-
-  return items;
-});
-
-/// Old server-based providers kept for Android Auto use only.
-final recentAlbumsProvider = FutureProvider<List<JellyfinAlbum>>((ref) async {
-  final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getRecentAlbums();
-});
-
-final recentArtistsProvider = FutureProvider<List<JellyfinArtist>>((ref) async {
-  final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getRecentArtists();
-});
-
-final recentPlaylistsProvider = FutureProvider<List<JellyfinPlaylist>>((ref) async {
-  final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return [];
-  return service.getRecentPlaylists();
-});
-
-// ---------------------------------------------------------------------------
-// New For You (recently-added unplayed albums with 14-day filter + fallback)
-// ---------------------------------------------------------------------------
-
-class NewForYouData {
-  final List<JellyfinAlbum> albums;
-  final bool isFallback;
-  const NewForYouData({required this.albums, required this.isFallback});
-}
-
-final newAlbumsProvider = FutureProvider<NewForYouData>((ref) async {
-  final service = ref.watch(jellyfinServiceProvider);
-  if (service == null) return const NewForYouData(albums: [], isFallback: false);
-
-  final rawNewAlbums = await service.getNewAlbums(limit: 20);
-  final twoWeeksAgo = DateTime.now().subtract(const Duration(days: 14));
-
-  final recentNewAlbums = rawNewAlbums.where((album) {
-    if (album.dateCreated == null) return false;
-    return album.dateCreated!.isAfter(twoWeeksAgo);
-  }).toList();
-
-  if (recentNewAlbums.isNotEmpty) {
-    return NewForYouData(albums: recentNewAlbums, isFallback: false);
-  }
-
-  // Fallback: Albums related to recent listens and categories/genres
-  final allAlbums = ref.watch(albumsProvider).valueOrNull ?? await service.getAlbums();
-  final recentPlays = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
-
-  // Preferred artists & genres
-  final preferredArtists = <String>{};
-  final preferredGenres = <String>{};
-
-  for (final item in recentPlays) {
-    if (item.type == RecentlyPlayedType.artist) {
-      preferredArtists.add(item.title.toLowerCase());
-    } else if (item.type == RecentlyPlayedType.album) {
-      preferredArtists.add(item.subtitle.toLowerCase());
-    }
-  }
-
-  for (final album in allAlbums) {
-    if (preferredArtists.contains(album.artist.toLowerCase())) {
-      preferredGenres.addAll(album.genres.map((g) => g.toLowerCase()));
-    }
-  }
-
-  final scoredAlbums = <({JellyfinAlbum album, int score})>[];
-  for (final album in allAlbums) {
-    int score = 0;
-    if (preferredArtists.contains(album.artist.toLowerCase())) {
-      score += 3;
-    }
-    for (final g in album.genres) {
-      if (preferredGenres.contains(g.toLowerCase())) {
-        score += 2;
-      }
-    }
-    if (score > 0) {
-      scoredAlbums.add((album: album, score: score));
-    }
-  }
-
-  scoredAlbums.sort((a, b) => b.score.compareTo(a.score));
-
-  List<JellyfinAlbum> fallbackAlbums = scoredAlbums.map((s) => s.album).take(12).toList();
-  if (fallbackAlbums.isEmpty) {
-    fallbackAlbums = (List<JellyfinAlbum>.from(allAlbums)..shuffle()).take(12).toList();
-  }
-
-  return NewForYouData(albums: fallbackAlbums, isFallback: true);
-});
-
-// ---------------------------------------------------------------------------
-// Shuffled Home Albums (biased / inspired by recent listens)
-// ---------------------------------------------------------------------------
-
-final homeAlbumsProvider = Provider<AsyncValue<List<JellyfinAlbum>>>((ref) {
-  final albumsAsync = ref.watch(albumsProvider);
-  return albumsAsync.whenData((albums) {
-    if (albums.isEmpty) return [];
-
-    final recentPlays = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
-
-    final preferredArtists = <String>{};
-    for (final item in recentPlays) {
-      if (item.type == RecentlyPlayedType.artist) {
-        preferredArtists.add(item.title.toLowerCase());
-      } else if (item.type == RecentlyPlayedType.album) {
-        preferredArtists.add(item.subtitle.toLowerCase());
-      }
-    }
-
-    final inspired = <JellyfinAlbum>[];
-    final others = <JellyfinAlbum>[];
-
-    for (final album in albums) {
-      if (preferredArtists.contains(album.artist.toLowerCase())) {
-        inspired.add(album);
-      } else {
-        others.add(album);
-      }
-    }
-
-    final rng = Random();
-    final shuffledInspired = List<JellyfinAlbum>.from(inspired)..shuffle(rng);
-    final shuffledOthers = List<JellyfinAlbum>.from(others)..shuffle(rng);
-
-    return [...shuffledInspired, ...shuffledOthers];
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Home Genre Mixes (top listened / library genres)
-// ---------------------------------------------------------------------------
-
-final homeGenreMixesProvider = FutureProvider<List<String>>((ref) async {
-  final playlistService = ref.watch(playlistServiceProvider);
-  final topListened = await playlistService.getTopListenedGenres(limit: 8);
-
-  final tracks = ref.watch(tracksProvider).valueOrNull ?? [];
-  final genreCounts = <String, int>{};
-  for (final t in tracks) {
-    for (final g in t.genres) {
-      final clean = g.trim();
-      if (clean.isNotEmpty) {
-        genreCounts[clean] = (genreCounts[clean] ?? 0) + 1;
-      }
-    }
-  }
-
-  final libraryGenres = genreCounts.entries.toList()
-    ..sort((a, b) => b.value.compareTo(a.value));
-
-  final result = <String>[];
-  for (final g in topListened) {
-    if (genreCounts.containsKey(g) && !result.contains(g)) {
-      result.add(g);
-    }
-  }
-  for (final entry in libraryGenres) {
-    if (!result.contains(entry.key)) {
-      result.add(entry.key);
-    }
-    if (result.length >= 8) break;
-  }
-  return result;
-});
-
-// ---------------------------------------------------------------------------
-// Android Auto Background Library Sync
-// ---------------------------------------------------------------------------
-
-final androidAutoSyncProvider = Provider<void>((ref) {
-  final service = ref.watch(jellyfinServiceProvider);
-  final handler = ref.watch(audioHandlerProvider);
-
-  if (service != null) {
-    handler.updateAndroidAutoCredentials(
-      service.serverUrl,
-      service.accessToken,
-    );
-  }
-
-  // Tracks are NOT watched here — Android Auto loads them on-demand per
-  // container via getChildren(). Watching tracksProvider here caused a
-  // notification storm that flooded the Binder IPC buffer.
-  final albums = ref.watch(albumsProvider).valueOrNull ?? [];
-  final artists = ref.watch(artistsProvider).valueOrNull ?? [];
-  final playlists = ref.watch(playlistsProvider).valueOrNull ?? [];
-  final recentlyPlayed = ref.watch(recentlyPlayedProvider).valueOrNull ?? [];
-  final newAlbums = ref.watch(newAlbumsProvider).valueOrNull?.albums ?? [];
-
-  if (service != null) {
-    handler.updateAndroidAutoLibrary(
-      playlists: playlists,
-      albums: albums,
-      artists: artists,
-      tracksByContainer: const {},
-      recentlyPlayed: recentlyPlayed,
-      newAlbums: newAlbums,
-    );
-  }
-});
-

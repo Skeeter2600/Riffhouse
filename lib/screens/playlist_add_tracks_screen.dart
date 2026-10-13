@@ -8,6 +8,7 @@ import '../providers/auth_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/art_placeholder.dart';
 
 class PlaylistAddTracksScreen extends ConsumerStatefulWidget {
   final String playlistId;
@@ -36,7 +37,7 @@ class _PlaylistAddTracksScreenState
     final allTracksAsync = ref.watch(tracksProvider);
     final playlistTracksAsync =
         ref.watch(playlistTracksProvider(widget.playlistId));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
 
     final isLoading = allTracksAsync.isLoading;
     final allTracks = allTracksAsync.valueOrNull ?? [];
@@ -211,10 +212,10 @@ class _PlaylistAddTracksScreenState
                               ? CachedNetworkImage(
                                   imageUrl: imageUrl,
                                   fit: BoxFit.cover,
-                                  errorWidget: (_, __, ___) => _placeholder(),
-                                  placeholder: (_, __) => _placeholder(),
+                                  errorWidget: (_, __, ___) => const ArtPlaceholder(size: 20),
+                                  placeholder: (_, __) => const ArtPlaceholder(size: 20),
                                 )
-                              : _placeholder(),
+                              : const ArtPlaceholder(size: 20),
                         ),
                       ),
                       title: Text(
@@ -301,10 +302,4 @@ class _PlaylistAddTracksScreenState
       ),
     );
   }
-
-  Widget _placeholder() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.music_note,
-            color: AppColors.textMuted, size: 20),
-      );
 }

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
+import 'art_placeholder.dart';
 
 class MiniPlayer extends ConsumerWidget {
   const MiniPlayer({super.key});
@@ -137,17 +138,10 @@ class MiniPlayer extends ConsumerWidget {
       return CachedNetworkImage(
         imageUrl: url,
         fit: BoxFit.cover,
-        placeholder: (_, __) => _placeholder(),
-        errorWidget: (_, __, ___) => _placeholder(),
+        placeholder: (_, __) => const ArtPlaceholder(size: 20),
+        errorWidget: (_, __, ___) => const ArtPlaceholder(size: 20),
       );
     }
-    return _placeholder();
-  }
-
-  Widget _placeholder() {
-    return Container(
-      color: AppColors.surfaceVariant,
-      child: const Icon(Icons.music_note, color: AppColors.textMuted, size: 20),
-    );
+    return const ArtPlaceholder(size: 20);
   }
 }

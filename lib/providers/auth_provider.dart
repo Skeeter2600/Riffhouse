@@ -1,6 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/drift.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 
 import '../audio/queue_notifier.dart';
@@ -8,88 +11,126 @@ import '../database/app_database.dart';
 import '../main.dart'; // Import to access global singletons
 import '../models/jellyfin_models.dart';
 import '../services/cache_service.dart';
+import '../services/favorites_store.dart';
 import '../services/jellyfin_service.dart';
+import '../services/offline_cache_interceptor.dart';
+import '../services/play_reporter.dart';
 import '../services/playlist_service.dart';
 import 'database_provider.dart';
+import '../utils/log.dart';
 
 // ---------------------------------------------------------------------------
 // AuthNotifier
 // ---------------------------------------------------------------------------
 
-class AuthNotifier extends StateNotifier<JellyfinUser?> {
-  final Ref _ref;
-  JellyfinService? _jellyfinService;
+/// The session saved by an earlier run, read by `main()` before the first
+/// frame so the app opens straight into the library instead of flashing the
+/// login screen.
+final savedSessionProvider = Provider<ServerConfig?>((ref) => null);
 
-  AuthNotifier(this._ref) : super(null) {
-    _restoreSession();
+class AuthNotifier extends StateNotifier<JellyfinUser?> {
+  static const _deviceIdKey = 'jellyfin_device_id';
+  static const _libraryOwnerKey = 'library_owner';
+
+  final Ref _ref;
+  MusicService? _musicService;
+
+  AuthNotifier(this._ref, ServerConfig? saved) : super(_userFrom(saved)) {
+    if (saved == null) return;
+    final service = MusicService.create(
+      type: ServerType.fromId(saved.serverType),
+      serverUrl: saved.serverUrl,
+      accessToken: saved.accessToken,
+      userId: saved.userId,
+    );
+    globalPlaylistService.musicService = service;
+    _musicService = service;
+    _verifySavedSession(service);
   }
 
-  JellyfinService? get jellyfinService => _jellyfinService;
-
-  /// Tries to restore a saved session from Drift on startup.
-  ///
-  /// Verifies the stored token against the server before trusting it.
-  /// If the token has been invalidated (401 — server restart, admin action, etc.),
-  /// the stale credentials are cleared and the user is redirected to /login.
-  /// All local listening data (play counts, history, etc.) is preserved.
-  Future<void> _restoreSession() async {
-    debugPrint('[AuthNotifier._restoreSession] Starting session restore...');
-    final db = _ref.read(databaseProvider);
-    final config = await db.getServerConfig();
-    if (config == null) {
-      debugPrint('[AuthNotifier._restoreSession] No saved config found → not logged in');
-      return;
-    }
-    debugPrint('[AuthNotifier._restoreSession] Found config: serverUrl=${config.serverUrl}, userId=${config.userId}, username=${config.username}');
-
-    final service = JellyfinService(
-      serverUrl: config.serverUrl,
-      accessToken: config.accessToken,
-      userId: config.userId,
-    );
-
-    // Verify the stored token is still accepted by the server before trusting it.
-    // A 401 here means the session was invalidated (server restart, admin logout, etc.).
-    final valid = await service.verifySession();
-    if (!valid) {
-      debugPrint('[AuthNotifier._restoreSession] Token INVALID (401) — clearing stale credentials and redirecting to login');
-      await db.clearServerConfig();
-      return; // state stays null → GoRouter redirects to /login
-    }
-
-    // Update the global playlist service's connection config.
-    globalPlaylistService.jellyfinService = service;
-
-    _jellyfinService = service;
-    state = JellyfinUser(
-      id: config.userId,
-      name: config.username,
-      accessToken: config.accessToken,
+  static JellyfinUser? _userFrom(ServerConfig? saved) {
+    if (saved == null) return null;
+    return JellyfinUser(
+      id: saved.userId,
+      name: saved.username,
+      accessToken: saved.accessToken,
       isAdmin: false,
     );
-    debugPrint('[AuthNotifier._restoreSession] Session restored! userId=${config.userId}, state now non-null');
   }
 
-  /// Authenticates against the Jellyfin server and saves the session.
-  Future<bool> login(
-      String serverUrl, String username, String password) async {
-    debugPrint('[AuthNotifier.login] Attempting login to $serverUrl as $username');
-    final user =
-        await JellyfinService.authenticate(serverUrl, username, password);
-    if (user == null) {
-      debugPrint('[AuthNotifier.login] Authentication failed');
-      return false;
-    }
-    debugPrint('[AuthNotifier.login] Login succeeded: userId=${user.id}');
+  MusicService? get musicService => _musicService;
 
-    final service = JellyfinService(
-      serverUrl: serverUrl,
-      accessToken: user.accessToken,
-      userId: user.id,
-    );
+  /// Loads this install's device id, if one was created by an earlier
+  /// sign-in. Called from `main()` before any request is made.
+  static Future<void> loadDeviceId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = prefs.getString(_deviceIdKey);
+      if (id != null && id.isNotEmpty) JellyfinService.deviceId = id;
+    } catch (_) {
+      // Keep the default
+    }
+  }
+
+  /// Checks the saved token in the background. The saved session is trusted
+  /// until the server explicitly rejects it, so the app keeps working (with
+  /// the local library and downloads) when it starts without a connection.
+  /// All local listening data (play counts, history, etc.) is preserved
+  /// either way.
+  Future<void> _verifySavedSession(MusicService service) async {
+    final status = await service.checkSession();
+    logDebug('[AuthNotifier] Saved session is ${status.name}');
+    if (status == SessionStatus.valid) {
+      // Deliver plays that were made while the server was out of reach.
+      unawaited(PlayReporter.flush(service));
+      unawaited(FavoritesStore.sync(service));
+    }
+    if (status == SessionStatus.unauthorized &&
+        identical(service, _musicService)) {
+      await logout401();
+    }
+  }
+
+  /// Signs in to a server of the given [type] and saves the session.
+  /// Returns null on success, or the reason it failed.
+  Future<LoginFailure?> login(
+    ServerType type,
+    String serverUrl,
+    String username,
+    String password,
+  ) async {
+    logDebug('[AuthNotifier.login] Attempting ${type.id} login to $serverUrl');
+
+    // Give this install its own device id the first time someone signs in.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      var id = prefs.getString(_deviceIdKey);
+      if (id == null || id.isEmpty) {
+        id = const Uuid().v4();
+        await prefs.setString(_deviceIdKey, id);
+      }
+      JellyfinService.deviceId = id;
+    } catch (_) {
+      // Keep the current id
+    }
+
+    OfflineCacheInterceptor.resetReachability();
+    final MusicService service;
+    final JellyfinUser user;
+    try {
+      final result =
+          await MusicService.signIn(type, serverUrl, username, password);
+      service = result.service;
+      user = result.user;
+    } on LoginException catch (e) {
+      logDebug('[AuthNotifier.login] Failed: ${e.failure.name}');
+      return e.failure;
+    }
+
+    await _forgetLibraryOfOtherAccount(service);
 
     // Update the global playlist service's connection config!
-    globalPlaylistService.jellyfinService = service;
+    globalPlaylistService.musicService = service;
 
     // Persist to Drift database.
     final db = _ref.read(databaseProvider);
@@ -98,29 +139,50 @@ class AuthNotifier extends StateNotifier<JellyfinUser?> {
       userId: Value(user.id),
       username: Value(user.name),
       accessToken: Value(user.accessToken),
+      serverType: Value(type.id),
     ));
 
-    _jellyfinService = service;
+    _musicService = service;
     state = user;
-    return true;
+    unawaited(PlayReporter.flush(service));
+    unawaited(FavoritesStore.load(service)
+        .then((_) => FavoritesStore.sync(service)));
+    return null;
+  }
+
+  /// The local track index belongs to one account on one server. Signing in
+  /// somewhere else must not show the previous library until the next full
+  /// sync, so the index is dropped. Play history and settings are kept.
+  Future<void> _forgetLibraryOfOtherAccount(MusicService service) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final owner = '${service.type.id}|'
+          '${MusicService.normalizeUrl(service.serverUrl)}|${service.userId}';
+      final previous = prefs.getString(_libraryOwnerKey);
+      // No record yet: an install from before this was tracked, signing back
+      // in to what is almost certainly the same account.
+      if (previous != null && previous != owner) {
+        await _ref.read(databaseProvider).clearLocalTracks();
+      }
+      await prefs.setString(_libraryOwnerKey, owner);
+    } catch (e) {
+      logDebug('[AuthNotifier] Could not record the library owner: $e');
+    }
   }
 
   /// Clears the session and removes saved config from database.
   /// Called from the Settings screen on manual logout.
   Future<void> logout() async {
-    debugPrint('[AuthNotifier.logout] Logging out...');
+    logDebug('[AuthNotifier.logout] Logging out...');
     final db = _ref.read(databaseProvider);
     await db.clearServerConfig();
 
     // Reset the global playlist service to a stub connection.
-    final stub = JellyfinService(
-      serverUrl: 'http://localhost',
-      accessToken: '',
-      userId: '',
-    );
-    globalPlaylistService.jellyfinService = stub;
+    final stub = MusicService.signedOut();
+    globalPlaylistService.musicService = stub;
+    unawaited(FavoritesStore.load(null));
 
-    _jellyfinService = null;
+    _musicService = null;
     state = null;
   }
 
@@ -129,17 +191,14 @@ class AuthNotifier extends StateNotifier<JellyfinUser?> {
   /// any local listening data (play counts, history, smart mix caches, etc.).
   Future<void> logout401() async {
     if (state == null) return; // already logged out, nothing to do
-    debugPrint('[AuthNotifier.logout401] Mid-session 401 — clearing stale token, redirecting to login');
+    logDebug('[AuthNotifier.logout401] Mid-session 401 — clearing stale token, redirecting to login');
     final db = _ref.read(databaseProvider);
     await db.clearServerConfig();
 
-    final stub = JellyfinService(
-      serverUrl: 'http://localhost',
-      accessToken: '',
-      userId: '',
-    );
-    globalPlaylistService.jellyfinService = stub;
-    _jellyfinService = null;
+    final stub = MusicService.signedOut();
+    globalPlaylistService.musicService = stub;
+    unawaited(FavoritesStore.load(null));
+    _musicService = null;
     state = null; // triggers GoRouter redirect to /login
   }
 }
@@ -150,14 +209,14 @@ class AuthNotifier extends StateNotifier<JellyfinUser?> {
 
 final authProvider =
     StateNotifierProvider<AuthNotifier, JellyfinUser?>((ref) {
-  return AuthNotifier(ref);
+  return AuthNotifier(ref, ref.read(savedSessionProvider));
 });
 
-/// Exposes the authenticated [JellyfinService], or null if not logged in.
-final jellyfinServiceProvider = Provider<JellyfinService?>((ref) {
+/// Exposes the authenticated [MusicService], or null if not logged in.
+final musicServiceProvider = Provider<MusicService?>((ref) {
   final user = ref.watch(authProvider);
-  final service = ref.watch(authProvider.notifier).jellyfinService;
-  debugPrint('[jellyfinServiceProvider] user=${user?.id ?? "null"}, service=${service != null ? "READY" : "NULL"}');
+  final service = ref.watch(authProvider.notifier).musicService;
+  logDebug('[musicServiceProvider] user=${user?.id ?? "null"}, service=${service != null ? "READY" : "NULL"}');
   if (user == null) return null;
   return service;
 });

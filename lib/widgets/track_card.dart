@@ -9,6 +9,9 @@ import '../providers/library_provider.dart';
 import '../audio/queue_notifier.dart';
 import '../theme/app_theme.dart';
 import 'add_to_playlist_sheet.dart';
+import '../utils/formatters.dart';
+import 'art_placeholder.dart';
+import 'download_button.dart';
 
 class TrackCard extends ConsumerWidget {
   final JellyfinTrack track;
@@ -22,16 +25,9 @@ class TrackCard extends ConsumerWidget {
     this.queueIndex = 0,
   });
 
-  String _formatDuration(int ms) {
-    final d = Duration(milliseconds: ms);
-    final m = d.inMinutes;
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && track.imageTag != null)
         ? service.getImageUrl(track.id, track.imageTag!)
         : null;
@@ -62,10 +58,10 @@ class TrackCard extends ConsumerWidget {
                     ? CachedNetworkImage(
                         imageUrl: imageUrl,
                         fit: BoxFit.cover,
-                        placeholder: (_, __) => _placeholder(),
-                        errorWidget: (_, __, ___) => _placeholder(),
+                        placeholder: (_, __) => const ArtPlaceholder(size: 24),
+                        errorWidget: (_, __, ___) => const ArtPlaceholder(size: 24),
                       )
-                    : _placeholder(),
+                    : const ArtPlaceholder(size: 24),
               ),
             ),
             const SizedBox(width: 12),
@@ -94,7 +90,7 @@ class TrackCard extends ConsumerWidget {
             ),
             // Duration
             Text(
-              _formatDuration(track.durationMs),
+              formatDurationMs(track.durationMs),
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(width: 8),
@@ -106,13 +102,6 @@ class TrackCard extends ConsumerWidget {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _placeholder() {
-    return Container(
-      color: AppColors.surfaceVariant,
-      child: const Icon(Icons.music_note, color: AppColors.textMuted, size: 24),
     );
   }
 
@@ -177,20 +166,12 @@ class TrackCard extends ConsumerWidget {
                 showAddToPlaylistBottomSheet(context, ref, track);
               },
             ),
-            ListTile(
-              leading:
-                  const Icon(Icons.download_outlined, color: AppColors.primary),
-              title: const Text('Download',
-                  style: TextStyle(color: AppColors.textPrimary)),
-              onTap: () => Navigator.pop(ctx),
-            ),
-            ListTile(
-              leading: const Icon(Icons.share_outlined,
-                  color: AppColors.textSecondary),
-              title: const Text('Share',
-                  style: TextStyle(color: AppColors.textPrimary)),
-              onTap: () => Navigator.pop(ctx),
-            ),
+            // Podcast episodes stream from their feed and are not stored.
+            if (!track.id.startsWith('podcast_'))
+              TrackDownloadTile(
+                track: track,
+                onSelected: () => Navigator.pop(ctx),
+              ),
             const SizedBox(height: 8),
           ],
         ),

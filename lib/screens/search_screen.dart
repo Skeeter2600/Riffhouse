@@ -9,6 +9,7 @@ import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/track_card.dart';
+import '../widgets/art_placeholder.dart';
 
 // ─── Search result state ──────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
   }
 
   Future<void> _runSearch(String query) async {
-    final service = ref.read(jellyfinServiceProvider);
+    final service = ref.read(musicServiceProvider);
     if (service == null) return;
 
     setState(() => _isSearching = true);
@@ -234,7 +235,7 @@ class _AlbumResultTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && album.imageTag != null)
         ? service.getImageUrl(album.id, album.imageTag!)
         : null;
@@ -250,9 +251,9 @@ class _AlbumResultTile extends ConsumerWidget {
               ? CachedNetworkImage(
                   imageUrl: imageUrl,
                   fit: BoxFit.cover,
-                  errorWidget: (_, __, ___) => _ph(),
+                  errorWidget: (_, __, ___) => const ArtPlaceholder(icon: Icons.album),
                 )
-              : _ph(),
+              : const ArtPlaceholder(icon: Icons.album),
         ),
       ),
       title: Text(album.name,
@@ -264,11 +265,6 @@ class _AlbumResultTile extends ConsumerWidget {
       onTap: () => context.push('/album/${album.id}'),
     );
   }
-
-  Widget _ph() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.album, color: AppColors.textMuted),
-      );
 }
 
 class _ArtistResultTile extends ConsumerWidget {
@@ -277,7 +273,7 @@ class _ArtistResultTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && artist.imageTag != null)
         ? service.getImageUrl(artist.id, artist.imageTag!)
         : null;

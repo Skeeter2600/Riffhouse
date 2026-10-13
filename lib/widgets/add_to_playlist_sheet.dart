@@ -123,8 +123,6 @@ void _showCreateAndAddDialog(BuildContext context, WidgetRef ref, JellyfinTrack 
   showDialog(
     context: context,
     builder: (dialogCtx) => AlertDialog(
-      backgroundColor: AppColors.card,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       title: const Text('New Playlist', style: TextStyle(color: AppColors.textPrimary)),
       content: TextField(
         controller: controller,

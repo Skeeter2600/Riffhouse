@@ -11,6 +11,8 @@ import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist_sheet.dart';
 import 'package:image_picker/image_picker.dart';
+import '../widgets/art_placeholder.dart';
+import '../widgets/local_cover.dart';
 
 class PlaylistDetailScreen extends ConsumerWidget {
   final String playlistId;
@@ -20,7 +22,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final playlistsAsync = ref.watch(playlistsProvider);
     final tracksAsync = ref.watch(playlistTracksProvider(playlistId));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
 
     return playlistsAsync.when(
       loading: () => const Scaffold(
@@ -75,7 +77,9 @@ class PlaylistDetailScreen extends ConsumerWidget {
                     ),
                   ],
                   flexibleSpace: FlexibleSpaceBar(
-                    background: imageUrl != null
+                    background: LocalCoverOr(
+                      itemId: playlist.id,
+                      child: imageUrl != null
                         ? CachedNetworkImage(
                             imageUrl: imageUrl,
                             fit: BoxFit.cover,
@@ -96,6 +100,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                             child: const Icon(Icons.queue_music_rounded,
                                 size: 80, color: AppColors.primary),
                           ),
+                    ),
                     stretchModes: const [StretchMode.zoomBackground],
                   ),
                 ),
@@ -250,8 +255,6 @@ class PlaylistDetailScreen extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Remove Downloads',
             style: TextStyle(color: AppColors.textPrimary)),
         content: Text(
@@ -321,7 +324,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                         style: TextStyle(color: AppColors.textPrimary)),
                     subtitle: Text(
                       isBatchDownloading
-                          ? 'Downloading ${batchProgress.current}/${batchProgress.total}...'
+                          ? 'Downloading ${batchProgress.current}/${batchProgress.total}... turn off to stop'
                           : isDownloaded
                               ? 'Downloaded & saved to device'
                               : 'Keep songs downloaded on device',
@@ -330,7 +333,14 @@ class PlaylistDetailScreen extends ConsumerWidget {
                     value: isDownloaded || isBatchDownloading,
                     activeThumbColor: const Color(0xFF10B981),
                     onChanged: isBatchDownloading
-                        ? null
+                        ? (_) {
+                            // Stops the transfer; finished songs are kept and
+                            // downloading again continues from here.
+                            Navigator.pop(ctx);
+                            ref
+                                .read(downloadProvider.notifier)
+                                .cancelBatch(playlist.id);
+                          }
                         : (bool enable) async {
                             Navigator.pop(ctx);
                             if (enable) {
@@ -369,7 +379,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                     leading: const Icon(Icons.sync_rounded, color: AppColors.secondary),
                     title: const Text('Sync with Server',
                         style: TextStyle(color: AppColors.textPrimary)),
-                    subtitle: const Text('Refresh playlist tracks from Jellyfin',
+                    subtitle: const Text('Refresh playlist tracks from the server',
                         style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
                     onTap: () async {
                       Navigator.pop(ctx);
@@ -408,8 +418,17 @@ class PlaylistDetailScreen extends ConsumerWidget {
                         if (!context.mounted) return;
                         if (success) {
                           ref.invalidate(playlistsProvider);
+                          final onServer = playlistService
+                              .musicService.supportsCustomCovers;
                           ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Cover art updated successfully!'), backgroundColor: AppColors.primary),
+                            SnackBar(
+                              content: Text(onServer
+                                  ? 'Cover art updated successfully!'
+                                  : 'Cover saved on this device. This server '
+                                      'cannot store playlist covers, so other '
+                                      'devices will not show it.'),
+                              backgroundColor: AppColors.primary,
+                            ),
                           );
                         } else {
                           ScaffoldMessenger.of(context).showSnackBar(
@@ -430,8 +449,6 @@ class PlaylistDetailScreen extends ConsumerWidget {
                       final confirm = await showDialog<bool>(
                         context: context,
                         builder: (dialogCtx) => AlertDialog(
-                          backgroundColor: AppColors.card,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                           title: const Text('Delete Playlist', style: TextStyle(color: AppColors.textPrimary)),
                           content: Text('Are you sure you want to delete "${playlist.name}"? This action cannot be undone.', style: const TextStyle(color: AppColors.textSecondary)),
                           actions: [
@@ -535,7 +552,7 @@ class _TrackItem extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && track.imageTag != null)
         ? service.getImageUrl(track.id, track.imageTag!)
         : null;
@@ -556,9 +573,9 @@ class _TrackItem extends ConsumerWidget {
               ? CachedNetworkImage(
                   imageUrl: imageUrl,
                   fit: BoxFit.cover,
-                  errorWidget: (_, __, ___) => _ph(),
+                  errorWidget: (_, __, ___) => const ArtPlaceholder(),
                 )
-              : _ph(),
+              : const ArtPlaceholder(),
         ),
       ),
       title: Text(track.name,
@@ -732,11 +749,6 @@ class _TrackItem extends ConsumerWidget {
       ),
     );
   }
-
-  Widget _ph() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.music_note, color: AppColors.textMuted),
-      );
 }
 
 class _PlaylistSearchAndAddSection extends ConsumerStatefulWidget {
@@ -763,7 +775,7 @@ class _PlaylistSearchAndAddSectionState
   Widget build(BuildContext context) {
     final allTracksAsync = ref.watch(tracksProvider);
     final playlistTracksAsync = ref.watch(playlistTracksProvider(widget.playlistId));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
 
     final allTracks = allTracksAsync.valueOrNull ?? [];
     final playlistTracks = playlistTracksAsync.valueOrNull ?? [];
@@ -845,10 +857,10 @@ class _PlaylistSearchAndAddSectionState
                           ? CachedNetworkImage(
                               imageUrl: imageUrl,
                               fit: BoxFit.cover,
-                              errorWidget: (_, __, ___) => _ph(),
-                              placeholder: (_, __) => _ph(),
+                              errorWidget: (_, __, ___) => const ArtPlaceholder(size: 20),
+                              placeholder: (_, __) => const ArtPlaceholder(size: 20),
                             )
-                          : _ph(),
+                          : const ArtPlaceholder(size: 20),
                     ),
                   ),
                   title: Text(
@@ -899,9 +911,4 @@ class _PlaylistSearchAndAddSectionState
       ),
     );
   }
-
-  Widget _ph() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.music_note, color: AppColors.textMuted, size: 20),
-      );
 }

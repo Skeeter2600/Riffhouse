@@ -9,6 +9,8 @@ import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/download_button.dart';
+import '../utils/formatters.dart';
 
 class AlbumDetailScreen extends ConsumerWidget {
   final String albumId;
@@ -18,7 +20,7 @@ class AlbumDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final albumsAsync = ref.watch(albumsProvider);
     final tracksAsync = ref.watch(albumTracksProvider(albumId));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
 
     return albumsAsync.when(
       loading: () =>
@@ -184,6 +186,12 @@ class AlbumDetailScreen extends ConsumerWidget {
                                 primary: false,
                               ),
                             ),
+                            const SizedBox(width: 4),
+                            AlbumDownloadButton(
+                              albumId: albumId,
+                              albumName: album.name,
+                              tracks: tracks,
+                            ),
                           ],
                         );
                       }).valueOrNull ??
@@ -246,11 +254,6 @@ class _TrackRow extends ConsumerWidget {
     required this.queueIndex,
   });
 
-  String _formatDuration(int ms) {
-    final d = Duration(milliseconds: ms);
-    return '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
-  }
-
   void _showContextMenu(BuildContext context, WidgetRef ref) {
     showModalBottomSheet(
       context: context,
@@ -280,11 +283,9 @@ class _TrackRow extends ConsumerWidget {
                 showAddToPlaylistBottomSheet(context, ref, track);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined, color: AppColors.primary),
-              title: const Text('Download',
-                  style: TextStyle(color: AppColors.textPrimary)),
-              onTap: () => Navigator.pop(ctx),
+            TrackDownloadTile(
+              track: track,
+              onSelected: () => Navigator.pop(ctx),
             ),
             const SizedBox(height: 8),
           ],
@@ -332,7 +333,7 @@ class _TrackRow extends ConsumerWidget {
               onPressed: () => _showContextMenu(context, ref),
             ),
             const SizedBox(width: 8),
-            Text(_formatDuration(track.durationMs),
+            Text(formatDurationMs(track.durationMs),
                 style: const TextStyle(
                     color: AppColors.textMuted, fontSize: 13)),
           ],

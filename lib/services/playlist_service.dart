@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:drift/drift.dart';
@@ -8,18 +9,20 @@ import '../models/jellyfin_models.dart';
 import '../models/podcast_episode.dart';
 import '../models/podcast_feed.dart';
 import 'jellyfin_service.dart';
+import 'play_reporter.dart';
 import 'podcast_service.dart';
+import 'local_cover_store.dart';
 
 /// Manages playlist synchronisation and smart mix generation using Drift.
 class PlaylistService {
   final AppDatabase db;
-  JellyfinService jellyfinService;
+  MusicService musicService;
 
   static const _dailyMixConfigKey = 'daily_mix_config_v1';
   static const _genreStatsKey = 'genre_playback_stats';
   static const _playTimestampsKey = 'track_play_timestamps_v1';
 
-  PlaylistService(this.db, this.jellyfinService);
+  PlaylistService(this.db, this.musicService);
 
   // ---------------------------------------------------------------------------
   // Sync
@@ -27,7 +30,7 @@ class PlaylistService {
 
   /// Fetches all playlists from the Jellyfin server and upserts them locally.
   Future<void> syncPlaylists() async {
-    final serverPlaylists = await jellyfinService.getPlaylists();
+    final serverPlaylists = await musicService.getPlaylists();
 
     for (final playlist in serverPlaylists) {
       final existing = await db.getLocalPlaylist(playlist.id);
@@ -469,7 +472,7 @@ class PlaylistService {
               final playlistTracks = <JellyfinTrack>[];
               for (final pid in slot.selectedPlaylistIds) {
                 try {
-                  final tracks = await jellyfinService.getPlaylistTracks(pid);
+                  final tracks = await musicService.getPlaylistTracks(pid);
                   // The service swallows network errors and returns an empty list.
                   if (tracks.isEmpty) onIncomplete?.call();
                   playlistTracks.addAll(tracks);
@@ -607,7 +610,7 @@ class PlaylistService {
     String name,
     List<String> trackIds,
   ) async {
-    final newId = await jellyfinService.createPlaylist(name, trackIds);
+    final newId = await musicService.createPlaylist(name, trackIds);
     if (newId == null) return null;
 
     final existing = await db.getLocalPlaylist(newId);
@@ -624,7 +627,7 @@ class PlaylistService {
 
   /// Adds a track to a playlist on the server and updates local database cache.
   Future<bool> addTrackToPlaylist(String playlistId, String trackId) async {
-    final success = await jellyfinService.addTrackToPlaylist(playlistId, trackId);
+    final success = await musicService.addTrackToPlaylist(playlistId, trackId);
     // Update local database cache
     final existing = await db.getLocalPlaylist(playlistId);
     if (existing != null) {
@@ -648,7 +651,7 @@ class PlaylistService {
 
   /// Removes a track from a playlist on the server and updates local database cache.
   Future<bool> removeTrackFromPlaylist(String playlistId, String trackId) async {
-    final success = await jellyfinService.removeTrackFromPlaylist(playlistId, trackId);
+    final success = await musicService.removeTrackFromPlaylist(playlistId, trackId);
     // Update local database cache
     final existing = await db.getLocalPlaylist(playlistId);
     if (existing != null) {
@@ -670,16 +673,23 @@ class PlaylistService {
 
   /// Deletes a playlist from the server and local database.
   Future<bool> deletePlaylist(String playlistId) async {
-    final success = await jellyfinService.deletePlaylist(playlistId);
+    final success = await musicService.deletePlaylist(playlistId);
     if (success) {
       await db.deleteLocalPlaylist(playlistId);
+      await LocalCoverStore.remove(musicService, playlistId);
     }
     return success;
   }
 
   /// Uploads custom album art for a playlist, updating the cache.
+  ///
+  /// On servers that cannot store a custom cover it is saved on this device
+  /// instead, where only this install shows it.
   Future<bool> uploadPlaylistImage(String playlistId, List<int> imageBytes, String mimeType) async {
-    return jellyfinService.uploadItemImage(playlistId, imageBytes, mimeType);
+    if (!musicService.supportsCustomCovers) {
+      return LocalCoverStore.save(musicService, playlistId, imageBytes);
+    }
+    return musicService.uploadItemImage(playlistId, imageBytes, mimeType);
   }
 
   // ---------------------------------------------------------------------------
@@ -689,6 +699,9 @@ class PlaylistService {
   /// Records a play event for [jellyfinId], incrementing playCount and tracking genre and timestamp statistics.
   Future<void> recordPlay(String jellyfinId) async {
     await db.incrementPlayCount(jellyfinId);
+
+    // Let the server know too (queued and sent later if it is unreachable).
+    unawaited(PlayReporter.report(musicService, jellyfinId, DateTime.now()));
 
     // Record timestamp for time-windowed frequency tracking
     try {

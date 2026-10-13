@@ -7,6 +7,7 @@ import '../audio/queue_notifier.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
 
 class SmartMixDetailScreen extends ConsumerWidget {
   final String mixType;
@@ -68,11 +69,6 @@ class SmartMixDetailScreen extends ConsumerWidget {
     return Icons.music_note_rounded;
   }
 
-  String _formatDuration(int ms) {
-    final d = Duration(milliseconds: ms);
-    return '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
-  }
-
   void _recordSelection(WidgetRef ref, String title, List<Color> colors) {
     if (isExcludedRecentlyPlayedMix(mixType: mixType, id: mixType, title: title)) {
       return;
@@ -90,7 +86,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final tracksAsync = ref.watch(smartMixTracksProvider(mixType));
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final title = _getTitle();
     final subtitle = _getSubtitle();
     final colors = _getColors();
@@ -306,7 +302,7 @@ class SmartMixDetailScreen extends ConsumerWidget {
                             ),
                             const SizedBox(width: 12),
                             Text(
-                              _formatDuration(t.durationMs),
+                              formatDurationMs(t.durationMs),
                               style: const TextStyle(
                                   color: AppColors.textMuted, fontSize: 13),
                             ),

@@ -107,6 +107,10 @@ class AppTheme {
         trackHeight: 3.0,
         thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
       ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: AppColors.card,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      ),
       iconTheme: const IconThemeData(color: AppColors.textSecondary),
       dividerTheme:
           const DividerThemeData(color: AppColors.surfaceVariant, thickness: 0.5),

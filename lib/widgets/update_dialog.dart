@@ -26,14 +26,14 @@ class _UpdateAvailableDialog extends ConsumerWidget {
     final release = state.release;
     if (release == null) return const SizedBox.shrink();
 
-    final canInstall =
-        ref.watch(updateServiceProvider).canSelfInstall && release.apkUrl != null;
+    final canInstall = ref.watch(updateServiceProvider).canSelfInstall &&
+        release.downloadUrl != null;
+    // Desktop replaces its own files and has to restart to do so.
+    final restarts = UpdateTarget.current != UpdateTarget.android;
     final downloading = state.status == UpdateStatus.downloading;
     final ready = state.status == UpdateStatus.readyToInstall;
 
     return AlertDialog(
-      backgroundColor: AppColors.card,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       title: Text(
         ready ? 'Update ready to install' : 'Update available',
         style: const TextStyle(color: AppColors.textPrimary),
@@ -79,7 +79,9 @@ class _UpdateAvailableDialog extends ConsumerWidget {
                 ? null
                 : () => ref.read(updateProvider.notifier).downloadAndInstall(),
             child: Text(
-              ready ? 'Install' : 'Download & install',
+              ready
+                  ? (restarts ? 'Install & restart' : 'Install')
+                  : 'Download & install',
               style: const TextStyle(color: Colors.white),
             ),
           )
@@ -107,8 +109,6 @@ class _WhatsNewDialog extends ConsumerWidget {
     if (release == null) return const SizedBox.shrink();
 
     return AlertDialog(
-      backgroundColor: AppColors.card,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       title: const Text("What's new",
           style: TextStyle(color: AppColors.textPrimary)),
       content: _DialogBody(

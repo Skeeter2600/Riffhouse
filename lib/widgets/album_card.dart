@@ -5,7 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
-import '../theme/app_theme.dart';
+import 'art_placeholder.dart';
 
 // ---------------------------------------------------------------------------
 // AlbumCard widget
@@ -17,7 +17,7 @@ class AlbumCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && album.imageTag != null)
         ? service.getImageUrl(album.id, album.imageTag!)
         : null;
@@ -35,10 +35,10 @@ class AlbumCard extends ConsumerWidget {
                       imageUrl: imageUrl,
                       fit: BoxFit.cover,
                       width: double.infinity,
-                      placeholder: (_, __) => _placeholder(),
-                      errorWidget: (_, __, ___) => _placeholder(),
+                      placeholder: (_, __) => const ArtPlaceholder(icon: Icons.album, size: 40),
+                      errorWidget: (_, __, ___) => const ArtPlaceholder(icon: Icons.album, size: 40),
                     )
-                  : _placeholder(),
+                  : const ArtPlaceholder(icon: Icons.album, size: 40),
             ),
           ),
           const SizedBox(height: 8),
@@ -55,15 +55,6 @@ class AlbumCard extends ConsumerWidget {
             overflow: TextOverflow.ellipsis,
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _placeholder() {
-    return Container(
-      color: AppColors.surfaceVariant,
-      child: const Center(
-        child: Icon(Icons.album, color: AppColors.textMuted, size: 40),
       ),
     );
   }

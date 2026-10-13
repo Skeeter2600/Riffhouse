@@ -12,31 +12,42 @@ import java.io.File
 
 class MainActivity : AudioServiceActivity() {
 
-    private val CHANNEL = "com.riffhouse/url_launcher"
     private val UPDATE_CHANNEL = "com.riffhouse/app_update"
+    private val FILES_CHANNEL = "com.riffhouse/files"
+    private val SAVE_FILE_REQUEST = 4201
+
+    // A "save file" request waiting for the user to pick a location.
+    private var pendingSaveResult: MethodChannel.Result? = null
+    private var pendingSaveBytes: ByteArray? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        // Saving a file (the listening-data backup) where the user chooses.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, FILES_CHANNEL)
             .setMethodCallHandler { call, result ->
-                if (call.method == "launch") {
-                    val url = call.argument<String>("url")
-                    if (url == null) {
-                        result.error("INVALID_URL", "URL must not be null", null)
-                        return@setMethodCallHandler
-                    }
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        startActivity(intent)
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("LAUNCH_FAILED", e.message, null)
-                    }
-                } else {
+                if (call.method != "saveFile") {
                     result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                val bytes = call.argument<ByteArray>("bytes")
+                if (bytes == null || pendingSaveResult != null) {
+                    result.error("SAVE_FAILED", "Nothing to save, or a save is already open", null)
+                    return@setMethodCallHandler
+                }
+                try {
+                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = call.argument<String>("mimeType") ?: "application/octet-stream"
+                        putExtra(Intent.EXTRA_TITLE, call.argument<String>("name") ?: "backup")
+                    }
+                    pendingSaveResult = result
+                    pendingSaveBytes = bytes
+                    startActivityForResult(intent, SAVE_FILE_REQUEST)
+                } catch (e: Exception) {
+                    pendingSaveResult = null
+                    pendingSaveBytes = null
+                    result.error("SAVE_FAILED", e.message, null)
                 }
             }
 
@@ -96,5 +107,31 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != SAVE_FILE_REQUEST) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val result = pendingSaveResult
+        val bytes = pendingSaveBytes
+        pendingSaveResult = null
+        pendingSaveBytes = null
+        if (result == null) return
+
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null || bytes == null) {
+            result.success(false) // Cancelled
+            return
+        }
+        try {
+            val stream = contentResolver.openOutputStream(uri)
+                ?: throw java.io.IOException("Could not open the chosen file")
+            stream.use { it.write(bytes) }
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("SAVE_FAILED", e.message, null)
+        }
     }
 }

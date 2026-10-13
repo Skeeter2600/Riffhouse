@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/jellyfin_service.dart';
 import '../theme/app_theme.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -22,6 +23,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
 
+  ServerType _serverType = ServerType.jellyfin;
   bool _obscurePassword = true;
   bool _isLoading = false;
   String? _errorMessage;
@@ -41,7 +43,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _errorMessage = null;
     });
 
-    final success = await ref.read(authProvider.notifier).login(
+    final failure = await ref.read(authProvider.notifier).login(
+          _serverType,
           _serverUrlController.text.trim(),
           _usernameController.text.trim(),
           _passwordController.text,
@@ -49,13 +52,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     if (!mounted) return;
 
-    if (success) {
+    if (failure == null) {
       context.go('/home/library');
     } else {
       setState(() {
         _isLoading = false;
-        _errorMessage =
-            'Could not connect. Check the server URL and credentials.';
+        _errorMessage = switch (failure) {
+          LoginFailure.invalidCredentials =>
+            'Wrong username or password.',
+          LoginFailure.unreachable =>
+            "Couldn't reach the server. Check the address and port, and "
+                'that this device is on the same network or VPN.',
+          LoginFailure.wrongServerType =>
+            'That address answered, but not like a ${_serverType.label} '
+                'server. Check the server type, the URL and the port.',
+        };
       });
     }
   }
@@ -133,7 +144,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     const SizedBox(height: 6),
                     Center(
                       child: Text(
-                        'Connect to your Jellyfin server',
+                        'Connect to your music server',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ).animate().fadeIn(delay: 300.ms, duration: 600.ms),
@@ -154,7 +165,38 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           ),
                           padding: const EdgeInsets.all(24),
                           child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
+                              // Server type
+                              DropdownButtonFormField<ServerType>(
+                                initialValue: _serverType,
+                                dropdownColor: AppColors.card,
+                                style: const TextStyle(
+                                    color: AppColors.textPrimary),
+                                decoration: const InputDecoration(
+                                  labelText: 'Server type',
+                                  prefixIcon: Icon(Icons.storage_outlined,
+                                      color: AppColors.primary),
+                                ),
+                                items: [
+                                  for (final type in ServerType.values)
+                                    DropdownMenuItem(
+                                      value: type,
+                                      child: Text(type.label),
+                                    ),
+                                ],
+                                onChanged: _isLoading
+                                    ? null
+                                    : (type) {
+                                        if (type == null) return;
+                                        setState(() {
+                                          _serverType = type;
+                                          _errorMessage = null;
+                                        });
+                                      },
+                              ),
+                              const SizedBox(height: 16),
+
                               // Server URL
                               TextFormField(
                                 controller: _serverUrlController,
@@ -162,10 +204,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                     color: AppColors.textPrimary),
                                 keyboardType: TextInputType.url,
                                 autocorrect: false,
-                                decoration: const InputDecoration(
+                                decoration: InputDecoration(
                                   labelText: 'Server URL',
-                                  hintText: 'http://192.168.1.100:8096',
-                                  prefixIcon: Icon(Icons.dns_outlined,
+                                  hintText: _serverType.urlHint,
+                                  prefixIcon: const Icon(Icons.dns_outlined,
                                       color: AppColors.primary),
                                 ),
                                 validator: (v) =>

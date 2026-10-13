@@ -965,9 +965,17 @@ class $ServerConfigsTable extends ServerConfigs
   late final GeneratedColumn<String> accessToken = GeneratedColumn<String>(
       'access_token', aliasedName, false,
       type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _serverTypeMeta =
+      const VerificationMeta('serverType');
+  @override
+  late final GeneratedColumn<String> serverType = GeneratedColumn<String>(
+      'server_type', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant('jellyfin'));
   @override
   List<GeneratedColumn> get $columns =>
-      [id, serverUrl, userId, username, accessToken];
+      [id, serverUrl, userId, username, accessToken, serverType];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -1007,6 +1015,12 @@ class $ServerConfigsTable extends ServerConfigs
     } else if (isInserting) {
       context.missing(_accessTokenMeta);
     }
+    if (data.containsKey('server_type')) {
+      context.handle(
+          _serverTypeMeta,
+          serverType.isAcceptableOrUnknown(
+              data['server_type']!, _serverTypeMeta));
+    }
     return context;
   }
 
@@ -1026,6 +1040,8 @@ class $ServerConfigsTable extends ServerConfigs
           .read(DriftSqlType.string, data['${effectivePrefix}username'])!,
       accessToken: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}access_token'])!,
+      serverType: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}server_type'])!,
     );
   }
 
@@ -1041,12 +1057,17 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
   final String userId;
   final String username;
   final String accessToken;
+
+  /// Which kind of server this is (`ServerType.id`). Sign-ins saved before
+  /// other servers were supported are Jellyfin.
+  final String serverType;
   const ServerConfig(
       {required this.id,
       required this.serverUrl,
       required this.userId,
       required this.username,
-      required this.accessToken});
+      required this.accessToken,
+      required this.serverType});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
@@ -1055,6 +1076,7 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
     map['user_id'] = Variable<String>(userId);
     map['username'] = Variable<String>(username);
     map['access_token'] = Variable<String>(accessToken);
+    map['server_type'] = Variable<String>(serverType);
     return map;
   }
 
@@ -1065,6 +1087,7 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
       userId: Value(userId),
       username: Value(username),
       accessToken: Value(accessToken),
+      serverType: Value(serverType),
     );
   }
 
@@ -1077,6 +1100,7 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
       userId: serializer.fromJson<String>(json['userId']),
       username: serializer.fromJson<String>(json['username']),
       accessToken: serializer.fromJson<String>(json['accessToken']),
+      serverType: serializer.fromJson<String>(json['serverType']),
     );
   }
   @override
@@ -1088,6 +1112,7 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
       'userId': serializer.toJson<String>(userId),
       'username': serializer.toJson<String>(username),
       'accessToken': serializer.toJson<String>(accessToken),
+      'serverType': serializer.toJson<String>(serverType),
     };
   }
 
@@ -1096,13 +1121,15 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
           String? serverUrl,
           String? userId,
           String? username,
-          String? accessToken}) =>
+          String? accessToken,
+          String? serverType}) =>
       ServerConfig(
         id: id ?? this.id,
         serverUrl: serverUrl ?? this.serverUrl,
         userId: userId ?? this.userId,
         username: username ?? this.username,
         accessToken: accessToken ?? this.accessToken,
+        serverType: serverType ?? this.serverType,
       );
   ServerConfig copyWithCompanion(ServerConfigsCompanion data) {
     return ServerConfig(
@@ -1112,6 +1139,8 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
       username: data.username.present ? data.username.value : this.username,
       accessToken:
           data.accessToken.present ? data.accessToken.value : this.accessToken,
+      serverType:
+          data.serverType.present ? data.serverType.value : this.serverType,
     );
   }
 
@@ -1122,13 +1151,15 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
           ..write('serverUrl: $serverUrl, ')
           ..write('userId: $userId, ')
           ..write('username: $username, ')
-          ..write('accessToken: $accessToken')
+          ..write('accessToken: $accessToken, ')
+          ..write('serverType: $serverType')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, serverUrl, userId, username, accessToken);
+  int get hashCode =>
+      Object.hash(id, serverUrl, userId, username, accessToken, serverType);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1137,7 +1168,8 @@ class ServerConfig extends DataClass implements Insertable<ServerConfig> {
           other.serverUrl == this.serverUrl &&
           other.userId == this.userId &&
           other.username == this.username &&
-          other.accessToken == this.accessToken);
+          other.accessToken == this.accessToken &&
+          other.serverType == this.serverType);
 }
 
 class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
@@ -1146,12 +1178,14 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
   final Value<String> userId;
   final Value<String> username;
   final Value<String> accessToken;
+  final Value<String> serverType;
   const ServerConfigsCompanion({
     this.id = const Value.absent(),
     this.serverUrl = const Value.absent(),
     this.userId = const Value.absent(),
     this.username = const Value.absent(),
     this.accessToken = const Value.absent(),
+    this.serverType = const Value.absent(),
   });
   ServerConfigsCompanion.insert({
     this.id = const Value.absent(),
@@ -1159,6 +1193,7 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
     required String userId,
     required String username,
     required String accessToken,
+    this.serverType = const Value.absent(),
   })  : serverUrl = Value(serverUrl),
         userId = Value(userId),
         username = Value(username),
@@ -1169,6 +1204,7 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
     Expression<String>? userId,
     Expression<String>? username,
     Expression<String>? accessToken,
+    Expression<String>? serverType,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1176,6 +1212,7 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
       if (userId != null) 'user_id': userId,
       if (username != null) 'username': username,
       if (accessToken != null) 'access_token': accessToken,
+      if (serverType != null) 'server_type': serverType,
     });
   }
 
@@ -1184,13 +1221,15 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
       Value<String>? serverUrl,
       Value<String>? userId,
       Value<String>? username,
-      Value<String>? accessToken}) {
+      Value<String>? accessToken,
+      Value<String>? serverType}) {
     return ServerConfigsCompanion(
       id: id ?? this.id,
       serverUrl: serverUrl ?? this.serverUrl,
       userId: userId ?? this.userId,
       username: username ?? this.username,
       accessToken: accessToken ?? this.accessToken,
+      serverType: serverType ?? this.serverType,
     );
   }
 
@@ -1212,6 +1251,9 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
     if (accessToken.present) {
       map['access_token'] = Variable<String>(accessToken.value);
     }
+    if (serverType.present) {
+      map['server_type'] = Variable<String>(serverType.value);
+    }
     return map;
   }
 
@@ -1222,7 +1264,8 @@ class ServerConfigsCompanion extends UpdateCompanion<ServerConfig> {
           ..write('serverUrl: $serverUrl, ')
           ..write('userId: $userId, ')
           ..write('username: $username, ')
-          ..write('accessToken: $accessToken')
+          ..write('accessToken: $accessToken, ')
+          ..write('serverType: $serverType')
           ..write(')'))
         .toString();
   }
@@ -2366,6 +2409,7 @@ typedef $$ServerConfigsTableCreateCompanionBuilder = ServerConfigsCompanion
   required String userId,
   required String username,
   required String accessToken,
+  Value<String> serverType,
 });
 typedef $$ServerConfigsTableUpdateCompanionBuilder = ServerConfigsCompanion
     Function({
@@ -2374,6 +2418,7 @@ typedef $$ServerConfigsTableUpdateCompanionBuilder = ServerConfigsCompanion
   Value<String> userId,
   Value<String> username,
   Value<String> accessToken,
+  Value<String> serverType,
 });
 
 class $$ServerConfigsTableFilterComposer
@@ -2399,6 +2444,9 @@ class $$ServerConfigsTableFilterComposer
 
   ColumnFilters<String> get accessToken => $composableBuilder(
       column: $table.accessToken, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get serverType => $composableBuilder(
+      column: $table.serverType, builder: (column) => ColumnFilters(column));
 }
 
 class $$ServerConfigsTableOrderingComposer
@@ -2424,6 +2472,9 @@ class $$ServerConfigsTableOrderingComposer
 
   ColumnOrderings<String> get accessToken => $composableBuilder(
       column: $table.accessToken, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get serverType => $composableBuilder(
+      column: $table.serverType, builder: (column) => ColumnOrderings(column));
 }
 
 class $$ServerConfigsTableAnnotationComposer
@@ -2449,6 +2500,9 @@ class $$ServerConfigsTableAnnotationComposer
 
   GeneratedColumn<String> get accessToken => $composableBuilder(
       column: $table.accessToken, builder: (column) => column);
+
+  GeneratedColumn<String> get serverType => $composableBuilder(
+      column: $table.serverType, builder: (column) => column);
 }
 
 class $$ServerConfigsTableTableManager extends RootTableManager<
@@ -2482,6 +2536,7 @@ class $$ServerConfigsTableTableManager extends RootTableManager<
             Value<String> userId = const Value.absent(),
             Value<String> username = const Value.absent(),
             Value<String> accessToken = const Value.absent(),
+            Value<String> serverType = const Value.absent(),
           }) =>
               ServerConfigsCompanion(
             id: id,
@@ -2489,6 +2544,7 @@ class $$ServerConfigsTableTableManager extends RootTableManager<
             userId: userId,
             username: username,
             accessToken: accessToken,
+            serverType: serverType,
           ),
           createCompanionCallback: ({
             Value<int> id = const Value.absent(),
@@ -2496,6 +2552,7 @@ class $$ServerConfigsTableTableManager extends RootTableManager<
             required String userId,
             required String username,
             required String accessToken,
+            Value<String> serverType = const Value.absent(),
           }) =>
               ServerConfigsCompanion.insert(
             id: id,
@@ -2503,6 +2560,7 @@ class $$ServerConfigsTableTableManager extends RootTableManager<
             userId: userId,
             username: username,
             accessToken: accessToken,
+            serverType: serverType,
           ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))

@@ -8,6 +8,9 @@ import '../models/jellyfin_models.dart';
 import '../providers/auth_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/local_cover.dart';
+import '../services/favorites_store.dart';
+import 'liked_songs_screen.dart';
 
 class PlaylistsScreen extends ConsumerStatefulWidget {
   const PlaylistsScreen({super.key});
@@ -73,7 +76,9 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
           ),
         ),
         data: (playlists) {
-          if (playlists.isEmpty) return _emptyState(context, ref);
+          if (playlists.isEmpty && FavoritesStore.count == 0) {
+            return _emptyState(context, ref);
+          }
 
           final q = _filterQuery.trim().toLowerCase();
           final filtered = q.isEmpty
@@ -81,6 +86,9 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
               : playlists
                   .where((p) => p.name.toLowerCase().contains(q))
                   .toList();
+          // Liked Songs is filtered by name like any other playlist.
+          final showLiked = q.isEmpty ||
+              FavoritesStore.likedSongsTitle.toLowerCase().contains(q);
 
           return RefreshIndicator(
             onRefresh: () => ref.read(playlistsProvider.notifier).refresh(),
@@ -128,7 +136,7 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
                   ),
                 ),
                 Expanded(
-                  child: filtered.isEmpty
+                  child: filtered.isEmpty && !showLiked
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           children: [
@@ -161,9 +169,16 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
                             mainAxisSpacing: 16,
                             crossAxisSpacing: 16,
                           ),
-                          itemCount: filtered.length,
-                          itemBuilder: (ctx, i) =>
-                              _PlaylistCard(playlist: filtered[i]),
+                          // Liked Songs sits in front of the server's
+                          // playlists.
+                          itemCount: filtered.length + (showLiked ? 1 : 0),
+                          itemBuilder: (ctx, i) {
+                            if (showLiked && i == 0) {
+                              return const _LikedSongsCard();
+                            }
+                            return _PlaylistCard(
+                                playlist: filtered[i - (showLiked ? 1 : 0)]);
+                          },
                         ),
                 ),
               ],
@@ -245,8 +260,6 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
-          backgroundColor: AppColors.card,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Text('New Playlist',
               style: TextStyle(color: AppColors.textPrimary)),
           content: SingleChildScrollView(
@@ -344,13 +357,76 @@ class _PlaylistsScreenState extends ConsumerState<PlaylistsScreen> {
 // Playlist card
 // ---------------------------------------------------------------------------
 
+/// Opens the Liked Songs playlist; shows how many songs are in it.
+class _LikedSongsCard extends StatelessWidget {
+  const _LikedSongsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => context.push('/liked-songs'),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.glassBorder, width: 0.5),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: LikedSongsArt(iconSize: 48),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    FavoritesStore.likedSongsTitle,
+                    style: TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  ValueListenableBuilder<int>(
+                    valueListenable: FavoritesStore.revision,
+                    builder: (context, _, __) {
+                      final count = FavoritesStore.count;
+                      return Text(
+                        '$count ${count == 1 ? 'track' : 'tracks'}',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 12),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PlaylistCard extends ConsumerWidget {
   final JellyfinPlaylist playlist;
   const _PlaylistCard({required this.playlist});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && playlist.imageTag != null)
         ? service.getImageUrl(playlist.id, playlist.imageTag!)
         : null;
@@ -371,15 +447,18 @@ class _PlaylistCard extends ConsumerWidget {
               child: ClipRRect(
                 borderRadius: const BorderRadius.vertical(
                     top: Radius.circular(16)),
-                child: imageUrl != null
-                    ? CachedNetworkImage(
-                        imageUrl: imageUrl,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        errorWidget: (_, __, ___) => _gradientPh(),
-                        placeholder: (_, __) => _gradientPh(),
-                      )
-                    : _gradientPh(),
+                child: LocalCoverOr(
+                  itemId: playlist.id,
+                  child: imageUrl != null
+                      ? CachedNetworkImage(
+                          imageUrl: imageUrl,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          errorWidget: (_, __, ___) => _gradientPh(),
+                          placeholder: (_, __) => _gradientPh(),
+                        )
+                      : _gradientPh(),
+                ),
               ),
             ),
             Padding(

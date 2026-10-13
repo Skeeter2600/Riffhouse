@@ -1,11 +1,11 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mobile_music_player/database/app_database.dart';
-import 'package:mobile_music_player/models/daily_mix_config.dart';
-import 'package:mobile_music_player/models/jellyfin_models.dart';
-import 'package:mobile_music_player/models/podcast_episode.dart';
-import 'package:mobile_music_player/services/jellyfin_service.dart';
-import 'package:mobile_music_player/services/playlist_service.dart';
+import 'package:riffhouse/database/app_database.dart';
+import 'package:riffhouse/models/daily_mix_config.dart';
+import 'package:riffhouse/models/jellyfin_models.dart';
+import 'package:riffhouse/models/podcast_episode.dart';
+import 'package:riffhouse/services/jellyfin_service.dart';
+import 'package:riffhouse/services/playlist_service.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 

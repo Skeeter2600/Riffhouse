@@ -89,13 +89,17 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "mobile_music_player" "\0"
+            // CompanyName and ProductName decide where the app keeps its data
+            // (%APPDATA%\<CompanyName>\<ProductName>). If they change again,
+            // add the old folder to migrateLegacyDesktopData in
+            // lib/utils/app_paths.dart so existing installs keep theirs.
+            VALUE "CompanyName", "Riffhouse" "\0"
+            VALUE "FileDescription", "Riffhouse" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "mobile_music_player" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "mobile_music_player.exe" "\0"
-            VALUE "ProductName", "mobile_music_player" "\0"
+            VALUE "InternalName", "Riffhouse" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Skeeter2600" "\0"
+            VALUE "OriginalFilename", "Riffhouse.exe" "\0"
+            VALUE "ProductName", "Riffhouse" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -2,6 +2,8 @@ import 'package:audio_service/audio_service.dart';
 
 import '../models/jellyfin_models.dart';
 import '../providers/library_provider.dart';
+import '../services/music_service.dart';
+import '../services/favorites_store.dart';
 
 // ---------------------------------------------------------------------------
 // Root media IDs (public so the audio handler can reference them)
@@ -14,6 +16,10 @@ const String kRootArtists = 'root_artists';
 const String kRootSmartMixes = 'root_smart_mixes';
 
 const String kPrefixPlaylist = 'playlist_';
+
+/// The Liked Songs playlist, which is built on the device from the likes.
+const String kLikedSongsContainer =
+    '$kPrefixPlaylist${FavoritesStore.likedSongsId}';
 const String kPrefixAlbum = 'album_';
 const String kPrefixArtist = 'artist_';
 
@@ -90,8 +96,7 @@ class AndroidAutoHandler {
 
   /// Jellyfin server base URL and token — needed to build artwork URIs
   /// that Android Auto can fetch without a browser auth session.
-  String serverUrl;
-  String accessToken;
+  MusicService service;
 
   /// Map of container id → track list.
   ///
@@ -111,8 +116,7 @@ class AndroidAutoHandler {
   final String Function(String localPath) toContentUri;
 
   AndroidAutoHandler({
-    required this.serverUrl,
-    required this.accessToken,
+    required this.service,
     required this.getCachedArtPath,
     required this.requestArtDownload,
     required this.toContentUri,
@@ -120,7 +124,7 @@ class AndroidAutoHandler {
 
   /// Resolves the most reliable art URI for a browse item, caching in background if needed.
   Uri? _resolveArtUri(String itemId, String? imageTag, String parentId) {
-    if (serverUrl == 'http://localhost' || accessToken.isEmpty) return null;
+    if (!service.isSignedIn) return null;
     final remoteUrl = _artUrl(itemId, imageTag: imageTag);
     final cachedPath = getCachedArtPath(remoteUrl);
     if (cachedPath != null) {
@@ -132,9 +136,8 @@ class AndroidAutoHandler {
       return Uri.parse(remoteUrl);
     }
   }
-  void updateCredentials(String url, String token) {
-    serverUrl = url;
-    accessToken = token;
+  void updateService(MusicService newService) {
+    service = newService;
   }
 
   bool hasContainer(String containerId) {
@@ -175,17 +178,10 @@ class AndroidAutoHandler {
   // URL helpers
   // ---------------------------------------------------------------------------
 
-  /// Builds an image URL for [itemId]. When [imageTag] is provided it is
-  /// appended for proper cache-busting and ensures the correct image variant
-  /// is fetched. The [api_key] param allows background fetchers (Android Auto,
-  /// notification shade) to load artwork without browser session cookies.
-  String _artUrl(String itemId, {String? imageTag}) {
-    final clean = serverUrl.endsWith('/')
-        ? serverUrl.substring(0, serverUrl.length - 1)
-        : serverUrl;
-    final tag = (imageTag != null && imageTag.isNotEmpty) ? '&tag=$imageTag' : '';
-    return '$clean/Items/$itemId/Images/Primary?api_key=$accessToken$tag';
-  }
+  /// Builds an image URL for [itemId] that needs no auth headers, so
+  /// background fetchers (Android Auto, notification shade) can load it.
+  String _artUrl(String itemId, {String? imageTag}) =>
+      service.artworkUrl(itemId, imageTag: imageTag);
 
   // ---------------------------------------------------------------------------
   // MediaBrowser tree
@@ -341,17 +337,32 @@ class AndroidAutoHandler {
   // ---------------------------------------------------------------------------
 
   List<MediaItem> _buildPlaylistBrowse() {
-    // Cap at 100 — Android Binder IPC buffer limit is ~1MB per transaction.
-    return _playlists.take(100).map((playlist) {
-      return MediaItem(
-        id: '$kPrefixPlaylist${playlist.id}',
-        title: playlist.name,
-        displaySubtitle: '${playlist.trackCount} tracks',
-        artUri: _resolveArtUri(playlist.id, playlist.imageTag, kRootPlaylists),
-        playable: false,
-        extras: _kGridExtras,
-      );
-    }).toList();
+    final liked = FavoritesStore.count;
+    return [
+      // Liked Songs comes first, once there is something in it.
+      if (liked > 0)
+        MediaItem(
+          id: kLikedSongsContainer,
+          title: FavoritesStore.likedSongsTitle,
+          displaySubtitle: '$liked ${liked == 1 ? 'track' : 'tracks'}',
+          artUri: Uri.parse(
+              'android.resource://$_kPackage/drawable/ic_favorite_on'),
+          playable: false,
+          extras: _kGridExtras,
+        ),
+      // Cap at 100 — Android Binder IPC buffer limit is ~1MB per transaction.
+      ..._playlists.take(100).map((playlist) {
+        return MediaItem(
+          id: '$kPrefixPlaylist${playlist.id}',
+          title: playlist.name,
+          displaySubtitle: '${playlist.trackCount} tracks',
+          artUri:
+              _resolveArtUri(playlist.id, playlist.imageTag, kRootPlaylists),
+          playable: false,
+          extras: _kGridExtras,
+        );
+      }),
+    ];
   }
 
   // ---------------------------------------------------------------------------

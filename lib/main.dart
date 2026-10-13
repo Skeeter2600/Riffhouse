@@ -2,15 +2,20 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'audio/audio_handler.dart';
 import 'audio/queue_notifier.dart';
+import 'database/app_database.dart';
+import 'providers/auth_provider.dart';
 import 'providers/database_provider.dart';
 import 'router/app_router.dart';
 import 'services/cache_service.dart';
-import 'services/database_service.dart';
+import 'services/favorites_store.dart';
 import 'services/jellyfin_service.dart';
 import 'services/playlist_service.dart';
 import 'theme/app_theme.dart';
+import 'utils/app_paths.dart';
+import 'services/local_cover_store.dart';
 
 late final JellyfinAudioHandler globalAudioHandler;
 late final PlaylistService globalPlaylistService;
@@ -19,19 +24,37 @@ late final CacheService globalCacheService;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Get Drift database instance.
-  final db = DatabaseService.instance;
+  // Desktop installs used to keep their data in the Documents folder.
+  await migrateLegacyDesktopData();
+
+  await LocalCoverStore.init();
+
+  // 1. Open the Drift database.
+  final db = AppDatabase();
 
   // 2. Bootstrap minimal services needed by the audio handler at startup.
   globalCacheService = CacheService(db);
   await globalCacheService.init();
   
-  final stubJellyfinService = JellyfinService(
-    serverUrl: 'http://localhost',
-    accessToken: '',
-    userId: '',
-  );
-  globalPlaylistService = PlaylistService(db, stubJellyfinService);
+  // Restore the saved sign-in up front, so the audio handler (which Android
+  // Auto can start without the UI) and the first frame both have it.
+  await AuthNotifier.loadDeviceId();
+  try {
+    JellyfinService.appVersion = (await PackageInfo.fromPlatform()).version;
+  } catch (_) {
+    // Keep the default
+  }
+  final savedSession = await db.getServerConfig();
+  final initialService = savedSession == null
+      ? MusicService.signedOut()
+      : MusicService.create(
+          type: ServerType.fromId(savedSession.serverType),
+          serverUrl: savedSession.serverUrl,
+          accessToken: savedSession.accessToken,
+          userId: savedSession.userId,
+        );
+  globalPlaylistService = PlaylistService(db, initialService);
+  await FavoritesStore.load(initialService);
 
   // 3. Register the audio handler with AudioService.
   globalAudioHandler = await AudioService.init(
@@ -53,6 +76,7 @@ Future<void> main() async {
     ProviderScope(
       overrides: [
         databaseProvider.overrideWithValue(db),
+        savedSessionProvider.overrideWithValue(savedSession),
         audioHandlerProvider.overrideWithValue(globalAudioHandler),
       ],
       child: const RiffhouseApp(),

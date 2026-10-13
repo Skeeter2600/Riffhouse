@@ -10,18 +10,11 @@ import '../providers/auth_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/library_provider.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
+import '../widgets/art_placeholder.dart';
 
 class DownloadsScreen extends ConsumerWidget {
   const DownloadsScreen({super.key});
-
-  String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
 
   List<JellyfinTrack> _resolveDownloadedTracks(
       List<CachedTrack> cachedList, List<JellyfinTrack> libraryTracks) {
@@ -93,7 +86,7 @@ class DownloadsScreen extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _formatBytes(totalBytes),
+                              formatBytes(totalBytes),
                               style: const TextStyle(
                                   color: AppColors.textPrimary,
                                   fontSize: 20,
@@ -166,6 +159,8 @@ class DownloadsScreen extends ConsumerWidget {
                   ],
                 ),
               ),
+
+              const _DownloadActivity(),
 
               // List
               Expanded(
@@ -261,8 +256,6 @@ class DownloadsScreen extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Clear All Downloads',
             style: TextStyle(color: AppColors.textPrimary)),
         content: const Text(
@@ -279,11 +272,72 @@ class DownloadsScreen extends ConsumerWidget {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () {
               Navigator.pop(ctx);
-              ref.read(cachedTracksProvider.notifier).clearAll();
+              ref.read(downloadProvider.notifier).clearAllDownloads();
             },
             child:
                 const Text('Clear All', style: TextStyle(color: Colors.white)),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Running downloads
+// ---------------------------------------------------------------------------
+
+/// Shows what is downloading right now, with a way to stop it, and the reason
+/// if downloads were held back (no Wi-Fi, storage limit).
+class _DownloadActivity extends ConsumerWidget {
+  const _DownloadActivity();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final downloads = ref.watch(downloadProvider);
+    final pending = downloads.pendingCount;
+    final message = downloads.message;
+    if (pending == 0 && message == null) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          if (pending > 0) ...[
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.primary),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Expanded(
+            child: Text(
+              pending > 0
+                  ? 'Downloading $pending ${pending == 1 ? 'track' : 'tracks'}'
+                  : message!,
+              style: TextStyle(
+                color: pending > 0
+                    ? AppColors.textPrimary
+                    : Colors.orangeAccent,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          if (pending > 0)
+            TextButton(
+              onPressed: () => ref.read(downloadProvider.notifier).cancelAll(),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            )
+          else
+            const SizedBox(height: 40),
         ],
       ),
     );
@@ -307,16 +361,9 @@ class _CachedTrackTile extends ConsumerWidget {
     required this.index,
   });
 
-  String _formatBytes(int bytes) {
-    if (bytes < 1024 * 1024) {
-      return '${(bytes / 1024).toStringAsFixed(0)} KB';
-    }
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && resolvedTrack.imageTag != null)
         ? service.getImageUrl(resolvedTrack.id, resolvedTrack.imageTag!)
         : null;
@@ -337,9 +384,9 @@ class _CachedTrackTile extends ConsumerWidget {
               ? CachedNetworkImage(
                   imageUrl: imageUrl,
                   fit: BoxFit.cover,
-                  errorWidget: (_, __, ___) => _ph(),
+                  errorWidget: (_, __, ___) => const ArtPlaceholder(icon: Icons.music_note_rounded, size: 24, color: AppColors.primary),
                 )
-              : _ph(),
+              : const ArtPlaceholder(icon: Icons.music_note_rounded, size: 24, color: AppColors.primary),
         ),
       ),
       title: Text(
@@ -352,7 +399,7 @@ class _CachedTrackTile extends ConsumerWidget {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        '$artists  •  ${_formatBytes(track.sizeBytes)}',
+        '$artists  •  ${formatBytes(track.sizeBytes)}',
         style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -376,10 +423,4 @@ class _CachedTrackTile extends ConsumerWidget {
       },
     );
   }
-
-  Widget _ph() => Container(
-        color: AppColors.surfaceVariant,
-        child: const Icon(Icons.music_note_rounded,
-            color: AppColors.primary, size: 24),
-      );
 }

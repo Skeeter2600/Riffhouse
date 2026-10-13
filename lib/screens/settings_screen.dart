@@ -1,17 +1,36 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../audio/audio_handler.dart';
 import '../audio/queue_notifier.dart';
-import '../services/url_launcher_service.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/database_provider.dart';
 import '../providers/download_provider.dart';
-import '../providers/library_provider.dart';
 import '../providers/update_provider.dart';
+import '../services/backup_files.dart';
+import '../services/backup_service.dart';
+import '../services/play_reporter.dart';
 import '../theme/app_theme.dart';
+import '../utils/formatters.dart';
 import '../widgets/update_dialog.dart';
+
+/// Whether plays are reported to the server (Settings → Playback).
+final reportPlaysProvider =
+    FutureProvider<bool>((ref) => PlayReporter.isEnabled());
+
+const _gb = 1024 * 1024 * 1024;
+
+/// Choices offered for the download limit; zero means unlimited.
+const _storageLimitChoices = [0, 1 * _gb, 2 * _gb, 5 * _gb, 10 * _gb, 20 * _gb, 50 * _gb];
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -19,9 +38,12 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(authProvider);
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final audioHandler = ref.watch(audioHandlerProvider);
     final updateState = ref.watch(updateProvider);
+    final downloads = ref.watch(downloadProvider);
+    final reportPlays = ref.watch(reportPlaysProvider).valueOrNull ?? true;
+    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
     return PopScope(
       canPop: context.canPop(),
@@ -37,6 +59,11 @@ class SettingsScreen extends ConsumerWidget {
         children: [
           // ---- Server ----
           const _SectionHeader(title: 'Server'),
+          _SettingsTile(
+            icon: Icons.storage_rounded,
+            title: 'Server Type',
+            subtitle: service?.type.label ?? 'Not connected',
+          ),
           _SettingsTile(
             icon: Icons.dns_rounded,
             title: 'Server URL',
@@ -68,20 +95,48 @@ class SettingsScreen extends ConsumerWidget {
           _ToggleTile(
             icon: Icons.blur_on_rounded,
             title: 'Crossfade',
-            subtitle: 'Blend the end of each song into the next (2 s)',
+            subtitle: 'Fade each song out while the next one fades in',
             value: audioHandler.crossfadeEnabled,
             onChanged: audioHandler.setCrossfadeEnabled,
+          ),
+          _CrossfadeLengthTile(handler: audioHandler),
+          _ToggleTile(
+            icon: Icons.cloud_sync_rounded,
+            title: 'Report Plays to Server',
+            subtitle:
+                'Keep play counts and last-played dates on your server up to date',
+            value: reportPlays,
+            onChanged: (enabled) async {
+              await PlayReporter.setEnabled(enabled);
+              ref.invalidate(reportPlaysProvider);
+            },
           ),
 
           const SizedBox(height: 8),
 
-          // ---- Cache ----
-          const _SectionHeader(title: 'Cache'),
+          // ---- Downloads ----
+          const _SectionHeader(title: 'Downloads'),
           _SettingsTile(
             icon: Icons.storage_rounded,
             title: 'Downloads',
             subtitle: 'Manage offline tracks',
             onTap: () => context.push('/home/downloads'),
+          ),
+          if (isMobile)
+            _ToggleTile(
+              icon: Icons.wifi_rounded,
+              title: 'Download on Wi-Fi Only',
+              subtitle: 'Never use mobile data for downloads',
+              value: downloads.wifiOnly,
+              onChanged: ref.read(downloadProvider.notifier).setWifiOnly,
+            ),
+          _SettingsTile(
+            icon: Icons.sd_storage_rounded,
+            title: 'Download Limit',
+            subtitle: downloads.storageLimitBytes == 0
+                ? 'No limit'
+                : 'Stop downloading at ${formatBytes(downloads.storageLimitBytes)}',
+            onTap: () => _chooseStorageLimit(context, ref),
           ),
           _SettingsTile(
             icon: Icons.cleaning_services_rounded,
@@ -106,6 +161,24 @@ class SettingsScreen extends ConsumerWidget {
             title: 'Clear All Cache',
             subtitle: 'Remove all downloaded files from device',
             onTap: () => _confirmClearCache(context, ref),
+          ),
+
+          const SizedBox(height: 8),
+
+          // ---- Backup ----
+          const _SectionHeader(title: 'Backup'),
+          _SettingsTile(
+            icon: Icons.save_alt_rounded,
+            title: 'Back Up Listening Data',
+            subtitle:
+                'Save play history, stats, mixes and podcast subscriptions to a file',
+            onTap: () => _backUp(context, ref),
+          ),
+          _SettingsTile(
+            icon: Icons.restore_rounded,
+            title: 'Restore from Backup',
+            subtitle: 'Bring listening data back from a backup file',
+            onTap: () => _restore(context, ref),
           ),
 
           const SizedBox(height: 8),
@@ -139,30 +212,15 @@ class SettingsScreen extends ConsumerWidget {
             icon: Icons.code_rounded,
             title: 'GitHub',
             subtitle: 'Riffhouse',
-            onTap: () async {
-              const url = 'https://github.com/Skeeter2600/Riffhouse';
-              try {
-                await UrlLauncherService.launch(url);
-              } on PlatformException catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Could not open browser: ${e.message}'),
-                      duration: const Duration(seconds: 4),
-                    ),
-                  );
-                }
-              } catch (e) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Error: $e'),
-                      duration: const Duration(seconds: 4),
-                    ),
-                  );
-                }
-              }
-            },
+            onTap: () =>
+                _openLink(context, 'https://github.com/Skeeter2600/Riffhouse'),
+          ),
+          _SettingsTile(
+            icon: Icons.coffee_rounded,
+            title: 'Support Riffhouse',
+            subtitle: 'Buy me a coffee',
+            onTap: () =>
+                _openLink(context, 'https://buymeacoffee.com/skeeter26'),
           ),
 
           const SizedBox(height: 32),
@@ -170,6 +228,116 @@ class SettingsScreen extends ConsumerWidget {
       ),
     ),
     );
+  }
+
+  Future<void> _openLink(BuildContext context, String url) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (_) {
+      // Reported below
+    }
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open $url')),
+      );
+    }
+  }
+
+  void _chooseStorageLimit(BuildContext context, WidgetRef ref) {
+    final current = ref.read(downloadProvider).storageLimitBytes;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Download Limit',
+            style: TextStyle(color: AppColors.textPrimary)),
+        children: [
+          for (final bytes in _storageLimitChoices)
+            ListTile(
+              leading: Icon(
+                bytes == current
+                    ? Icons.radio_button_checked
+                    : Icons.radio_button_unchecked,
+                color: bytes == current
+                    ? AppColors.primary
+                    : AppColors.textMuted,
+              ),
+              title: Text(
+                bytes == 0 ? 'No limit' : formatBytes(bytes),
+                style: const TextStyle(color: AppColors.textPrimary),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                ref.read(downloadProvider.notifier).setStorageLimitBytes(bytes);
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _backUp(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final json =
+          await BackupService(ref.read(databaseProvider)).exportJson(prefs);
+      final bytes = Uint8List.fromList(utf8.encode(json));
+      final date = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+      final savedAs =
+          await BackupFiles.save('riffhouse-backup-$date.json', bytes);
+      if (savedAs == null) return; // Cancelled
+
+      messenger.showSnackBar(SnackBar(
+        content: Text('Backup saved: $savedAs'),
+        backgroundColor: AppColors.primary,
+      ));
+    } catch (_) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Could not save the backup')));
+    }
+  }
+
+  Future<void> _restore(BuildContext context, WidgetRef ref) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final bytes = await BackupFiles.pick();
+      if (bytes == null) return; // Cancelled
+
+      final prefs = await SharedPreferences.getInstance();
+      final summary = await BackupService(ref.read(databaseProvider))
+          .restoreJson(utf8.decode(bytes), prefs);
+
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Backup restored',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: Text(
+            'Restored play history for ${summary.playbackRecords} tracks and '
+            '${summary.settings} saved settings.\n\n'
+            'Close and reopen Riffhouse so every screen picks them up.',
+            style: const TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+    } on BackupFormatException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+          const SnackBar(content: Text('Could not read that backup file')));
+    }
   }
 
   String _updateStatusText(UpdateState state) {
@@ -213,9 +381,6 @@ class SettingsScreen extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Disconnect',
             style: TextStyle(color: AppColors.textPrimary)),
         content: const Text(
@@ -248,9 +413,6 @@ class SettingsScreen extends ConsumerWidget {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Clear Cache',
             style: TextStyle(color: AppColors.textPrimary)),
         content: const Text(
@@ -268,7 +430,7 @@ class SettingsScreen extends ConsumerWidget {
                 ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () async {
               Navigator.pop(ctx);
-              await ref.read(cachedTracksProvider.notifier).clearAll();
+              await ref.read(downloadProvider.notifier).clearAllDownloads();
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -349,6 +511,82 @@ class _SettingsTile extends StatelessWidget {
       trailing: onTap != null
           ? const Icon(Icons.chevron_right, color: AppColors.textMuted)
           : null,
+    );
+  }
+}
+
+/// Shows and changes how long two songs overlap.
+class _CrossfadeLengthTile extends StatefulWidget {
+  final JellyfinAudioHandler handler;
+  const _CrossfadeLengthTile({required this.handler});
+
+  @override
+  State<_CrossfadeLengthTile> createState() => _CrossfadeLengthTileState();
+}
+
+class _CrossfadeLengthTileState extends State<_CrossfadeLengthTile> {
+  Future<void> _choose() async {
+    var seconds = widget.handler.crossfadeSeconds;
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Crossfade Length',
+              style: TextStyle(color: AppColors.textPrimary)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$seconds ${seconds == 1 ? 'second' : 'seconds'}',
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Slider(
+                value: seconds.toDouble(),
+                min: JellyfinAudioHandler.minCrossfadeSeconds.toDouble(),
+                max: JellyfinAudioHandler.maxCrossfadeSeconds.toDouble(),
+                divisions: JellyfinAudioHandler.maxCrossfadeSeconds -
+                    JellyfinAudioHandler.minCrossfadeSeconds,
+                label: '$seconds s',
+                onChanged: (v) => setDialogState(() => seconds = v.round()),
+              ),
+              const Text(
+                'Over this long, the song that is ending fades to silence '
+                'while the next one fades up to full volume.',
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, seconds),
+              child: const Text('Set', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null) return;
+    await widget.handler.setCrossfadeSeconds(chosen);
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seconds = widget.handler.crossfadeSeconds;
+    return _SettingsTile(
+      icon: Icons.timelapse_rounded,
+      title: 'Crossfade Length',
+      subtitle: '$seconds ${seconds == 1 ? 'second' : 'seconds'}',
+      onTap: _choose,
     );
   }
 }

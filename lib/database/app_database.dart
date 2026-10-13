@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+
+import '../utils/app_paths.dart';
 
 part 'app_database.g.dart';
 
@@ -42,6 +43,10 @@ class ServerConfigs extends Table {
   TextColumn get userId => text()();
   TextColumn get username => text()();
   TextColumn get accessToken => text()();
+
+  /// Which kind of server this is (`ServerType.id`). Sign-ins saved before
+  /// other servers were supported are Jellyfin.
+  TextColumn get serverType => text().withDefault(const Constant('jellyfin'))();
 }
 
 /// Metadata cache for all library tracks fetched from Jellyfin
@@ -69,7 +74,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -79,6 +84,10 @@ class AppDatabase extends _$AppDatabase {
         onUpgrade: (m, from, to) async {
           if (from < 2) {
             await m.createTable(localTracks);
+          }
+          if (from < 3) {
+            // Adds a column with a default; existing rows are untouched.
+            await m.addColumn(serverConfigs, serverConfigs.serverType);
           }
         },
       );
@@ -238,7 +247,7 @@ class AppDatabase extends _$AppDatabase {
 
 LazyDatabase _openConnection() {
   return LazyDatabase(() async {
-    final dbFolder = await getApplicationDocumentsDirectory();
+    final dbFolder = await appDataDirectory();
     final file = File(p.join(dbFolder.path, 'riffhouse.db'));
     return NativeDatabase(
       file,

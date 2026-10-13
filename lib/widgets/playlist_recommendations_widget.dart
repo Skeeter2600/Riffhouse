@@ -123,7 +123,7 @@ class _PlaylistRecommendationsWidgetState
     }
 
     try {
-      final service = ref.read(jellyfinServiceProvider);
+      final service = ref.read(musicServiceProvider);
       if (service == null) return;
 
       final streamUrl = track.streamUrl ?? service.getStreamUrl(track.jellyfinId);
@@ -318,7 +318,7 @@ class _PlaylistRecommendationsWidgetState
     }
 
     final currentTrack = _candidates[_index];
-    final service = ref.watch(jellyfinServiceProvider);
+    final service = ref.watch(musicServiceProvider);
     final imageUrl = (service != null && currentTrack.imageTag != null)
         ? service.getImageUrl(currentTrack.id, currentTrack.imageTag!)
         : (service != null && currentTrack.albumId.isNotEmpty)

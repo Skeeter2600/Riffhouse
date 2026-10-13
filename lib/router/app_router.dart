@@ -3,11 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../providers/auth_provider.dart';
-import '../services/jellyfin_service.dart';
 
 import '../screens/album_detail_screen.dart';
 import '../screens/artist_detail_screen.dart';
 import '../screens/library_screen.dart';
+import '../screens/liked_songs_screen.dart';
 import '../screens/login_screen.dart';
 import '../screens/player_screen.dart';
 import '../screens/playlist_detail_screen.dart';
@@ -40,57 +40,14 @@ class _ShellScaffold extends ConsumerStatefulWidget {
 }
 
 class _ShellScaffoldState extends ConsumerState<_ShellScaffold> {
-  bool _initialRefreshDone = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // Defer the initial library refresh until the JellyfinService is actually
-    // available. Calling refresh() while service == null sets state to
-    // AsyncData([]) and wipes out whatever the local DB cache had, making
-    // all songs/playlists disappear until the next manual pull-to-refresh.
-    //
-    // We check once after the first frame. If service is already ready we
-    // refresh immediately. If not, the listen() in build() will pick it up
-    // on the first non-null emission from jellyfinServiceProvider.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _tryInitialRefresh();
-    });
-  }
-
-  void _tryInitialRefresh() {
-    if (_initialRefreshDone) {
-      debugPrint('[ShellScaffold._tryInitialRefresh] Already done, skipping');
-      return;
-    }
-    final service = ref.read(jellyfinServiceProvider);
-    debugPrint('[ShellScaffold._tryInitialRefresh] service=${service != null ? "READY" : "NULL"}');
-    if (service == null) {
-      debugPrint('[ShellScaffold._tryInitialRefresh] service null → waiting for listener');
-      return; // build()'s listen will trigger this later
-    }
-    _initialRefreshDone = true;
-    debugPrint('[ShellScaffold._tryInitialRefresh] Triggering refresh for all providers');
-    ref.read(playlistsProvider.notifier).refresh();
-    ref.read(albumsProvider.notifier).refresh();
-    ref.read(artistsProvider.notifier).refresh();
-    ref.read(tracksProvider.notifier).refresh();
-  }
-
   @override
   Widget build(BuildContext context) {
     // Keep Android Auto synced with background library data updates
     ref.watch(androidAutoSyncProvider);
 
-    // Trigger the initial library refresh the moment the Jellyfin service
-    // becomes available (i.e. after the async session restore completes).
-    // This is a no-op if _tryInitialRefresh() already ran in initState.
-    ref.listen<JellyfinService?>(jellyfinServiceProvider, (previous, next) {
-      debugPrint('[ShellScaffold.listen] jellyfinServiceProvider changed: ${previous != null ? "was READY" : "was NULL"} → ${next != null ? "now READY" : "now NULL"}');
-      if (previous == null && next != null) {
-        _tryInitialRefresh();
-      }
-    });
+    // The library providers load themselves when first watched (and again
+    // whenever the sign-in changes), so nothing is refreshed by hand here:
+    // doing so re-downloaded the whole library on every launch.
 
     // Watching the update provider here starts the launch-time update check;
     // each new prompt (update found, or notes after updating) opens a dialog.
@@ -224,6 +181,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/home/search',
         redirect: (context, state) => '/home/library',
+      ),
+      GoRoute(
+        path: '/liked-songs',
+        builder: (context, state) => const LikedSongsScreen(),
       ),
       GoRoute(
         path: '/home/downloads',

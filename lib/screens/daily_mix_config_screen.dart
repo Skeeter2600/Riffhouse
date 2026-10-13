@@ -288,8 +288,6 @@ class _DailyMixConfigScreenState extends ConsumerState<DailyMixConfigScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Reset to Defaults?', style: TextStyle(color: AppColors.textPrimary)),
         content: const Text(
           'This will restore the original daily drive mix (Up First, Frequently Played, Marketplace, Recent, and Discoveries).',
@@ -326,8 +324,6 @@ class _DailyMixConfigScreenState extends ConsumerState<DailyMixConfigScreen> {
     final discard = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.card,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Discard changes?', style: TextStyle(color: AppColors.textPrimary)),
         content: const Text('You have unsaved changes to your daily drive configuration.',
             style: TextStyle(color: AppColors.textSecondary)),
